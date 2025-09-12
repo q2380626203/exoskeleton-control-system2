@@ -49,14 +49,14 @@ void UART_Send_Frame(const can_frame_t* frame) {
     memcpy(&packet[4], frame->payload, 8);
 
     // 打印原始发送数据
-    ESP_LOGI(TAG, "发送原始数据[%d字节]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", 
-             CAN_RAW_FRAME_LENGTH,
-             packet[0], packet[1], packet[2], packet[3],
-             packet[4], packet[5], packet[6], packet[7],
-             packet[8], packet[9], packet[10], packet[11]);
+    // ESP_LOGI(TAG, "发送原始数据[%d字节]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", 
+    //          CAN_RAW_FRAME_LENGTH,
+    //          packet[0], packet[1], packet[2], packet[3],
+    //          packet[4], packet[5], packet[6], packet[7],
+    //          packet[8], packet[9], packet[10], packet[11]);
     
-    ESP_LOGI(TAG, "帧信息: type=0x%02X, data=0x%04X, target_id=0x%02X", 
-             frame->type, frame->data, frame->target_id);
+    // ESP_LOGI(TAG, "帧信息: type=0x%02X, data=0x%04X, target_id=0x%02X", 
+    //          frame->type, frame->data, frame->target_id);
 
     // Send via UART
     int written = uart_write_bytes(MOTOR_UART_NUM, packet, CAN_RAW_FRAME_LENGTH);

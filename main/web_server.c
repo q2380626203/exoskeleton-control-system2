@@ -8,6 +8,18 @@
 #include "esp_http_server.h"
 #include <string.h>
 
+// 交替电流控制函数声明 (在main.c中定义)
+extern void Start_Alternating_Current(void);
+extern void Stop_Alternating_Current(void);
+
+// 电机目标电流数组声明 (在main.c中定义)
+extern float motor_target_current[2];
+
+// 交替电流配置变量声明 (在main.c中定义)
+extern int alternating_interval_ms;
+extern float alternating_current_x;
+extern float alternating_current_y;
+
 static const char *TAG = "web_server";
 
 httpd_handle_t web_server_handle = NULL;
@@ -40,13 +52,42 @@ static const char* html_page =
 "        .current-control { margin: 15px 0; padding: 15px; background: #e9ecef; border-radius: 5px; }"
 "        .current-input { width: 100px; padding: 8px; margin: 0 10px; border: 2px solid #ddd; border-radius: 4px; text-align: center; }"
 "        .btn-set-current { background: #fd7e14; color: white; }"
+"        .btn-alternating { background: #6f42c1; color: white; margin-right: 10px; }"
+"        .alternating-config { margin: 20px 0; padding: 15px; background: #f8f9fa; border: 2px solid #6f42c1; border-radius: 8px; }"
+"        .config-title { font-size: 18px; font-weight: bold; color: #6f42c1; margin-bottom: 10px; }"
+"        .config-item { margin: 10px 0; display: inline-block; margin-right: 20px; }"
+"        .config-input { width: 80px; padding: 5px; margin: 0 5px; border: 1px solid #ddd; border-radius: 3px; text-align: center; }"
 "    </style>"
 "</head>"
 "<body>"
 "    <div class='container'>"
 "        <h1>🦾 外骨骼控制系统</h1>"
+"        <button id='alternating-btn' class='btn btn-alternating' onclick='toggleAlternatingCurrent()'>开启交替电流</button>"
 "        <button class='btn refresh-btn' onclick='location.reload()'>刷新状态</button>"
 "        <div style='clear: both;'></div>"
+"        "
+"        <div class='alternating-config'>"
+"            <div class='config-title'>🔄 交替电流配置</div>"
+"            <div class='config-item'>"
+"                <label>间隔时间:</label>"
+"                <input type='number' id='interval-time' class='config-input' min='100' max='5000' step='100' value='750' />"
+"                <span>ms</span>"
+"            </div>"
+"            <div class='config-item'>"
+"                <label>电流值X:</label>"
+"                <input type='number' id='current-x' class='config-input' min='0.1' max='15' step='0.1' value='6.0' />"
+"                <span>A</span>"
+"            </div>"
+"            <div class='config-item'>"
+"                <label>电流值Y:</label>"
+"                <input type='number' id='current-y' class='config-input' min='0.1' max='15' step='0.1' value='3.0' />"
+"                <span>A</span>"
+"            </div>"
+"            <button class='btn btn-set-current' onclick='setAlternatingConfig()'>应用配置</button>"
+"            <div style='margin-top: 10px; font-size: 14px; color: #666;'>"
+"                <strong>交替逻辑:</strong> 周期1→1号-X,2号-Y | 周期2→1号+Y,2号+X"
+"            </div>"
+"        </div>"
 "        "
 "        <div class='motor-section'>"
 "            <div class='motor-title'>电机 1</div>"
@@ -126,6 +167,73 @@ static const char* html_page =
 "                alert(`电机${motorId} 电流设置为${current}A ${data.success ? '成功' : '失败'}: ${data.message}`);"
 "            })"
 "            .catch(error => alert('设置失败: ' + error));"
+"        }"
+"        "
+"        let alternatingCurrentEnabled = false;"
+"        "
+"        function toggleAlternatingCurrent() {"
+"            const action = alternatingCurrentEnabled ? 'stop' : 'start';"
+"            const btn = document.getElementById('alternating-btn');"
+"            "
+"            btn.disabled = true;"
+"            btn.textContent = '处理中...';"
+"            "
+"            fetch(`/alternating_current/${action}`, { method: 'POST' })"
+"            .then(response => response.json())"
+"            .then(data => {"
+"                if (data.success) {"
+"                    alternatingCurrentEnabled = !alternatingCurrentEnabled;"
+"                    btn.textContent = alternatingCurrentEnabled ? '停止交替电流' : '开启交替电流';"
+"                    btn.className = alternatingCurrentEnabled ? 'btn btn-disable' : 'btn btn-alternating';"
+"                    alert(`交替电流控制${alternatingCurrentEnabled ? '已启动' : '已停止'}: ${data.message}`);"
+"                } else {"
+"                    alert(`操作失败: ${data.message}`);"
+"                }"
+"            })"
+"            .catch(error => {"
+"                alert('操作失败: ' + error);"
+"            })"
+"            .finally(() => {"
+"                btn.disabled = false;"
+"            });"
+"        }"
+"        "
+"        function setAlternatingConfig() {"
+"            const intervalTime = parseInt(document.getElementById('interval-time').value);"
+"            const currentX = parseFloat(document.getElementById('current-x').value);"
+"            const currentY = parseFloat(document.getElementById('current-y').value);"
+"            "
+"            if (isNaN(intervalTime) || intervalTime < 100 || intervalTime > 5000) {"
+"                alert('间隔时间必须在100-5000ms之间');"
+"                return;"
+"            }"
+"            "
+"            if (isNaN(currentX) || currentX < 0.1 || currentX > 15) {"
+"                alert('电流值X必须在0.1-15A之间');"
+"                return;"
+"            }"
+"            "
+"            if (isNaN(currentY) || currentY < 0.1 || currentY > 15) {"
+"                alert('电流值Y必须在0.1-15A之间');"
+"                return;"
+"            }"
+"            "
+"            fetch('/alternating_current/config', {"
+"                method: 'POST',"
+"                headers: { 'Content-Type': 'application/json' },"
+"                body: JSON.stringify({ interval: intervalTime, current_x: currentX, current_y: currentY })"
+"            })"
+"            .then(response => response.json())"
+"            .then(data => {"
+"                if (data.success) {"
+"                    alert(`配置已更新: 间隔${intervalTime}ms, X=${currentX}A, Y=${currentY}A`);"
+"                } else {"
+"                    alert(`配置失败: ${data.message}`);"
+"                }"
+"            })"
+"            .catch(error => {"
+"                alert('配置失败: ' + error);"
+"            });"
 "        }"
 "        "
 "        function updateStatus() {"
@@ -305,11 +413,9 @@ static esp_err_t motor1_set_current_handler(httpd_req_t *req) {
         current = atof(current_str);
     }
     
-    // 调用Set_CurMode设置电机1电流
-    if (web_motors) {
-        Set_CurMode(&web_motors[0], current);
-        ESP_LOGI(TAG, "设置电机1电流为: %.2fA", current);
-    }
+    // 设置电机1目标电流到数组
+    motor_target_current[0] = current;
+    ESP_LOGI(TAG, "设置电机1目标电流为: %.2fA", current);
     
     char json_response[200];
     snprintf(json_response, sizeof(json_response),
@@ -350,16 +456,107 @@ static esp_err_t motor2_set_current_handler(httpd_req_t *req) {
         current = atof(current_str);
     }
     
-    // 调用Set_CurMode设置电机2电流
-    if (web_motors) {
-        Set_CurMode(&web_motors[1], current);
-        ESP_LOGI(TAG, "设置电机2电流为: %.2fA", current);
-    }
+    // 设置电机2目标电流到数组
+    motor_target_current[1] = current;
+    ESP_LOGI(TAG, "设置电机2目标电流为: %.2fA", current);
     
     char json_response[200];
     snprintf(json_response, sizeof(json_response),
              "{\"success\":true,\"message\":\"电机2电流设置为%.2fA\",\"current\":%.2f}",
              current, current);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    
+    return ESP_OK;
+}
+
+/* 交替电流启动处理 */
+static esp_err_t alternating_current_start_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "交替电流启动请求");
+    
+    Start_Alternating_Current();
+    
+    char json_response[200];
+    snprintf(json_response, sizeof(json_response),
+             "{\"success\":true,\"message\":\"交替电流模式已启动 - 两电机同向7A/-7A，每1秒切换\"}");
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    
+    return ESP_OK;
+}
+
+/* 交替电流停止处理 */
+static esp_err_t alternating_current_stop_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "交替电流停止请求");
+    
+    Stop_Alternating_Current();
+    
+    char json_response[200];
+    snprintf(json_response, sizeof(json_response),
+             "{\"success\":true,\"message\":\"交替电流模式已停止，恢复为普通模式\"}");
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    
+    return ESP_OK;
+}
+
+/* 交替电流配置处理 */
+static esp_err_t alternating_current_config_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "交替电流配置请求");
+    char buf[200];
+    int ret, remaining = req->content_len;
+    
+    if (remaining >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+        return ESP_FAIL;
+    }
+    
+    ret = httpd_req_recv(req, buf, (remaining < sizeof(buf)) ? remaining : sizeof(buf));
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timeout");
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // 解析JSON获取配置值
+    int interval = 800;
+    float current_x = 3.0f;
+    float current_y = 3.0f;
+    
+    char *interval_str = strstr(buf, "\"interval\":");
+    if (interval_str) {
+        interval_str += 11; // 跳过 "interval":
+        interval = atoi(interval_str);
+    }
+    
+    char *current_x_str = strstr(buf, "\"current_x\":");
+    if (current_x_str) {
+        current_x_str += 12; // 跳过 "current_x":
+        current_x = atof(current_x_str);
+    }
+    
+    char *current_y_str = strstr(buf, "\"current_y\":");
+    if (current_y_str) {
+        current_y_str += 12; // 跳过 "current_y":
+        current_y = atof(current_y_str);
+    }
+    
+    // 更新配置变量
+    alternating_interval_ms = interval;
+    alternating_current_x = current_x;
+    alternating_current_y = current_y;
+    
+    ESP_LOGI(TAG, "交替电流配置更新: 间隔%dms, X=%.1fA, Y=%.1fA", interval, current_x, current_y);
+    
+    char json_response[200];
+    snprintf(json_response, sizeof(json_response),
+             "{\"success\":true,\"message\":\"配置已更新: 间隔%dms, X=%.1fA, Y=%.1fA\"}",
+             interval, current_x, current_y);
     
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
@@ -448,6 +645,27 @@ static const httpd_uri_t motor2_set_current_uri = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t alternating_current_start_uri = {
+    .uri       = "/alternating_current/start",
+    .method    = HTTP_POST,
+    .handler   = alternating_current_start_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t alternating_current_stop_uri = {
+    .uri       = "/alternating_current/stop",
+    .method    = HTTP_POST,
+    .handler   = alternating_current_stop_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t alternating_current_config_uri = {
+    .uri       = "/alternating_current/config",
+    .method    = HTTP_POST,
+    .handler   = alternating_current_config_handler,
+    .user_ctx  = NULL
+};
+
 esp_err_t web_server_init(web_server_config_t* config)
 {
     if (web_server_handle != NULL) {
@@ -502,6 +720,14 @@ esp_err_t web_server_start(void)
         httpd_register_uri_handler(web_server_handle, &motor1_set_current_uri);
         ESP_LOGI(TAG, "注册电机2电流设置URI: %s", motor2_set_current_uri.uri);
         httpd_register_uri_handler(web_server_handle, &motor2_set_current_uri);
+        
+        // 注册交替电流控制URI处理器
+        ESP_LOGI(TAG, "注册交替电流启动URI: %s", alternating_current_start_uri.uri);
+        httpd_register_uri_handler(web_server_handle, &alternating_current_start_uri);
+        ESP_LOGI(TAG, "注册交替电流停止URI: %s", alternating_current_stop_uri.uri);
+        httpd_register_uri_handler(web_server_handle, &alternating_current_stop_uri);
+        ESP_LOGI(TAG, "注册交替电流配置URI: %s", alternating_current_config_uri.uri);
+        httpd_register_uri_handler(web_server_handle, &alternating_current_config_uri);
         
         ESP_LOGI(TAG, "Web服务器启动成功，访问地址: http://192.168.4.1");
         return ESP_OK;
