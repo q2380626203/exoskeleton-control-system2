@@ -48,6 +48,16 @@ void UART_Send_Frame(const can_frame_t* frame) {
     // Copy the 8-byte data payload
     memcpy(&packet[4], frame->payload, 8);
 
+    // 打印原始发送数据
+    ESP_LOGI(TAG, "发送原始数据[%d字节]: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", 
+             CAN_RAW_FRAME_LENGTH,
+             packet[0], packet[1], packet[2], packet[3],
+             packet[4], packet[5], packet[6], packet[7],
+             packet[8], packet[9], packet[10], packet[11]);
+    
+    ESP_LOGI(TAG, "帧信息: type=0x%02X, data=0x%04X, target_id=0x%02X", 
+             frame->type, frame->data, frame->target_id);
+
     // Send via UART
     int written = uart_write_bytes(MOTOR_UART_NUM, packet, CAN_RAW_FRAME_LENGTH);
     if (written != CAN_RAW_FRAME_LENGTH) {
@@ -153,10 +163,10 @@ void handle_uart_rx() {
 // Motor control functions
 void Motor_Enable(MI_Motor* motor) {
     can_frame_t frame;
-    frame.type = 3;
-    frame.data = 0x0000;
+    frame.type = 0x03;
     frame.target_id = motor->id;
-    memset(frame.payload, 0, 8);
+    frame.data = MASTER_ID; // 使用MASTER_ID
+    memset(frame.payload, 0, sizeof(frame.payload)); // Data payload is all zeros for enable command
     
     UART_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d enabled", motor->id);
@@ -164,11 +174,13 @@ void Motor_Enable(MI_Motor* motor) {
 
 void Motor_Reset(MI_Motor* motor, uint8_t clear_error) {
     can_frame_t frame;
-    frame.type = 4;
-    frame.data = 0x0000;
+    frame.type = 0x04;
     frame.target_id = motor->id;
-    memset(frame.payload, 0, 8);
-    frame.payload[0] = clear_error;
+    frame.data = MASTER_ID;
+    memset(frame.payload, 0, sizeof(frame.payload));
+    if (clear_error) {
+        frame.payload[0] = 1;
+    }
     
     UART_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d reset", motor->id);
@@ -176,10 +188,11 @@ void Motor_Reset(MI_Motor* motor, uint8_t clear_error) {
 
 void Motor_Set_Zero(MI_Motor* motor) {
     can_frame_t frame;
-    frame.type = 6;
-    frame.data = 0x0000;
+    frame.type = 0x06;
     frame.target_id = motor->id;
-    memset(frame.payload, 0, 8);
+    frame.data = MASTER_ID;
+    memset(frame.payload, 0, sizeof(frame.payload));
+    frame.payload[0] = 1;
     
     UART_Send_Frame(&frame);
     ESP_LOGI(TAG, "Motor %d set zero position", motor->id);
@@ -190,24 +203,38 @@ void Set_CurMode(MI_Motor* motor, float current) {
 }
 
 void Change_Mode(MI_Motor* motor, uint8_t mode) {
-    Set_SingleParameter(motor, RUN_MODE, (float)mode);
+    can_frame_t frame;
+    frame.type = 0x12; // Type 18
+    frame.target_id = motor->id;
+    frame.data = MASTER_ID;
+
+    memset(frame.payload, 0, sizeof(frame.payload));
+    
+    uint16_t index = RUN_MODE;
+    // Parameter index (little-endian in payload)
+    frame.payload[0] = index & 0xFF;
+    frame.payload[1] = (index >> 8) & 0xFF;
+
+    // Mode value
+    frame.payload[4] = mode;
+
+    UART_Send_Frame(&frame);
 }
 
 void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value) {
     can_frame_t frame;
-    frame.type = 1;
-    frame.data = parameter;
+    frame.type = 0x12; // Type 18 - 正确的参数设置类型
+    frame.data = MASTER_ID; // 使用MASTER_ID
     frame.target_id = motor->id;
     
-    // Convert float to bytes
-    union {
-        float f;
-        uint8_t bytes[4];
-    } float_converter;
-    float_converter.f = value;
+    memset(frame.payload, 0, sizeof(frame.payload));
     
-    memcpy(frame.payload, float_converter.bytes, 4);
-    memset(&frame.payload[4], 0, 4);
+    // Parameter index (little-endian in payload)
+    frame.payload[0] = parameter & 0xFF;
+    frame.payload[1] = (parameter >> 8) & 0xFF;
+    
+    // Parameter value (float, little-endian)
+    memcpy(&frame.payload[4], &value, sizeof(float));
     
     UART_Send_Frame(&frame);
 }

@@ -37,6 +37,9 @@ static const char* html_page =
 "        .status-online { color: #28a745; }"
 "        .status-offline { color: #dc3545; }"
 "        .refresh-btn { background: #007bff; color: white; float: right; }"
+"        .current-control { margin: 15px 0; padding: 15px; background: #e9ecef; border-radius: 5px; }"
+"        .current-input { width: 100px; padding: 8px; margin: 0 10px; border: 2px solid #ddd; border-radius: 4px; text-align: center; }"
+"        .btn-set-current { background: #fd7e14; color: white; }"
 "    </style>"
 "</head>"
 "<body>"
@@ -59,6 +62,11 @@ static const char* html_page =
 "                <button class='btn btn-disable' onclick='controlMotor(1, \"disable\")'>禁用电机</button>"
 "                <button class='btn btn-mode' onclick='controlMotor(1, \"current_mode\")'>电流模式</button>"
 "            </div>"
+"            <div class='current-control'>"
+"                <label>电流设置 (A): </label>"
+"                <input type='number' id='motor1-current' class='current-input' min='-17' max='17' step='0.1' value='0' />"
+"                <button class='btn btn-set-current' onclick='setCurrent(1)'>设置电流</button>"
+"            </div>"
 "        </div>"
 "        "
 "        <div class='motor-section'>"
@@ -74,6 +82,11 @@ static const char* html_page =
 "                <button class='btn btn-enable' onclick='controlMotor(2, \"enable\")'>使能电机</button>"
 "                <button class='btn btn-disable' onclick='controlMotor(2, \"disable\")'>禁用电机</button>"
 "                <button class='btn btn-mode' onclick='controlMotor(2, \"current_mode\")'>电流模式</button>"
+"            </div>"
+"            <div class='current-control'>"
+"                <label>电流设置 (A): </label>"
+"                <input type='number' id='motor2-current' class='current-input' min='-17' max='17' step='0.1' value='0' />"
+"                <button class='btn btn-set-current' onclick='setCurrent(2)'>设置电流</button>"
 "            </div>"
 "        </div>"
 "        "
@@ -92,6 +105,27 @@ static const char* html_page =
 "                if(data.success) setTimeout(() => location.reload(), 1000);"
 "            })"
 "            .catch(error => alert('操作失败: ' + error));"
+"        }"
+"        "
+"        function setCurrent(motorId) {"
+"            const currentInput = document.getElementById(`motor${motorId}-current`);"
+"            const current = parseFloat(currentInput.value);"
+"            "
+"            if (isNaN(current) || current < -17 || current > 17) {"
+"                alert('电流值必须在-17A到17A之间');"
+"                return;"
+"            }"
+"            "
+"            fetch(`/motor/${motorId}/set_current`, {"
+"                method: 'POST',"
+"                headers: { 'Content-Type': 'application/json' },"
+"                body: JSON.stringify({ current: current })"
+"            })"
+"            .then(response => response.json())"
+"            .then(data => {"
+"                alert(`电机${motorId} 电流设置为${current}A ${data.success ? '成功' : '失败'}: ${data.message}`);"
+"            })"
+"            .catch(error => alert('设置失败: ' + error));"
 "        }"
 "        "
 "        function updateStatus() {"
@@ -243,6 +277,96 @@ static esp_err_t motor2_current_mode_handler(httpd_req_t *req) {
     return handle_motor_control(req, 2, "current_mode");
 }
 
+/* 电机1设置电流 */
+static esp_err_t motor1_set_current_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "电机1设置电流处理器被调用");
+    char buf[100];
+    int ret, remaining = req->content_len;
+    
+    if (remaining >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+        return ESP_FAIL;
+    }
+    
+    ret = httpd_req_recv(req, buf, (remaining < sizeof(buf)) ? remaining : sizeof(buf));
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timeout");
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // 解析JSON获取电流值
+    float current = 0.0f;
+    char *current_str = strstr(buf, "\"current\":");
+    if (current_str) {
+        current_str += 10; // 跳过 "current":
+        current = atof(current_str);
+    }
+    
+    // 调用Set_CurMode设置电机1电流
+    if (web_motors) {
+        Set_CurMode(&web_motors[0], current);
+        ESP_LOGI(TAG, "设置电机1电流为: %.2fA", current);
+    }
+    
+    char json_response[200];
+    snprintf(json_response, sizeof(json_response),
+             "{\"success\":true,\"message\":\"电机1电流设置为%.2fA\",\"current\":%.2f}",
+             current, current);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    
+    return ESP_OK;
+}
+
+/* 电机2设置电流 */
+static esp_err_t motor2_set_current_handler(httpd_req_t *req) {
+    ESP_LOGI(TAG, "电机2设置电流处理器被调用");
+    char buf[100];
+    int ret, remaining = req->content_len;
+    
+    if (remaining >= sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Content too long");
+        return ESP_FAIL;
+    }
+    
+    ret = httpd_req_recv(req, buf, (remaining < sizeof(buf)) ? remaining : sizeof(buf));
+    if (ret <= 0) {
+        if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+            httpd_resp_send_err(req, HTTPD_408_REQ_TIMEOUT, "Request timeout");
+        }
+        return ESP_FAIL;
+    }
+    buf[ret] = '\0';
+    
+    // 解析JSON获取电流值
+    float current = 0.0f;
+    char *current_str = strstr(buf, "\"current\":");
+    if (current_str) {
+        current_str += 10; // 跳过 "current":
+        current = atof(current_str);
+    }
+    
+    // 调用Set_CurMode设置电机2电流
+    if (web_motors) {
+        Set_CurMode(&web_motors[1], current);
+        ESP_LOGI(TAG, "设置电机2电流为: %.2fA", current);
+    }
+    
+    char json_response[200];
+    snprintf(json_response, sizeof(json_response),
+             "{\"success\":true,\"message\":\"电机2电流设置为%.2fA\",\"current\":%.2f}",
+             current, current);
+    
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, json_response, HTTPD_RESP_USE_STRLEN);
+    
+    return ESP_OK;
+}
+
 // URI处理器定义
 static const httpd_uri_t root_uri = {
     .uri       = "/",
@@ -310,6 +434,20 @@ static const httpd_uri_t motor2_current_mode_uri = {
     .user_ctx  = NULL
 };
 
+static const httpd_uri_t motor1_set_current_uri = {
+    .uri       = "/motor/1/set_current",
+    .method    = HTTP_POST,
+    .handler   = motor1_set_current_handler,
+    .user_ctx  = NULL
+};
+
+static const httpd_uri_t motor2_set_current_uri = {
+    .uri       = "/motor/2/set_current",
+    .method    = HTTP_POST,
+    .handler   = motor2_set_current_handler,
+    .user_ctx  = NULL
+};
+
 esp_err_t web_server_init(web_server_config_t* config)
 {
     if (web_server_handle != NULL) {
@@ -342,6 +480,7 @@ esp_err_t web_server_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEB_SERVER_PORT;
     config.max_open_sockets = WEB_SERVER_MAX_OPEN_SOCKETS;
+    config.max_uri_handlers = 20; // 增加URI处理器数量
     
     ESP_LOGI(TAG, "启动Web服务器...");
     
@@ -359,6 +498,10 @@ esp_err_t web_server_start(void)
         httpd_register_uri_handler(web_server_handle, &motor2_enable_uri);
         httpd_register_uri_handler(web_server_handle, &motor2_disable_uri);
         httpd_register_uri_handler(web_server_handle, &motor2_current_mode_uri);
+        ESP_LOGI(TAG, "注册电机1电流设置URI: %s", motor1_set_current_uri.uri);
+        httpd_register_uri_handler(web_server_handle, &motor1_set_current_uri);
+        ESP_LOGI(TAG, "注册电机2电流设置URI: %s", motor2_set_current_uri.uri);
+        httpd_register_uri_handler(web_server_handle, &motor2_set_current_uri);
         
         ESP_LOGI(TAG, "Web服务器启动成功，访问地址: http://192.168.4.1");
         return ESP_OK;

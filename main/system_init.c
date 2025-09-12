@@ -38,8 +38,8 @@ static void wifi_event_callback(int32_t event_id, void* event_data)
 
 // 电机数据回调函数
 static void motor_data_callback(MI_Motor* motor) {
-    ESP_LOGI(TAG, "电机%d数据更新: 位置=%.3f, 速度=%.3f, 电流=%.3f, 温度=%.1f", 
-             motor->id, motor->position, motor->velocity, motor->current, motor->temperature);
+    ESP_LOGI(TAG, "电机%d数据更新: 位置=%.3f, 速度=%.3f, 电流=%.3f, 温度=%.1f, 模式=%d", 
+             motor->id, motor->position, motor->velocity, motor->current, motor->temperature, motor->mode);
 }
 
 esp_err_t system_init_nvs(void)
@@ -88,6 +88,25 @@ esp_err_t system_init_exoskeleton(void)
     // 初始化电机通信
     UART_Rx_Init(motor_data_callback);
     
+    // 等待UART稳定
+    vTaskDelay(pdMS_TO_TICKS(500));
+    
+    // 设置电机为电流模式
+    ESP_LOGI(TAG, "设置电机为电流模式...");
+    for(int i = 0; i < 2; i++) {
+        MI_Motor* motor = &motors[i];
+        Change_Mode(motor, CUR_MODE);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        // 使能电机
+        Motor_Enable(motor);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
+        ESP_LOGI(TAG, "电机 %d 已设置为电流模式并使能", motor->id);
+    }
+    
+    ESP_LOGI(TAG, "电机模式设置完成");
+    
     // 初始化按键检测
     button_init();
     
@@ -107,6 +126,11 @@ esp_err_t system_init_exoskeleton(void)
 esp_err_t system_init_all(void)
 {
     ESP_LOGI(TAG, "开始系统初始化...");
+    
+    // 等待5秒让系统稳定
+    ESP_LOGI(TAG, "系统启动延时5秒...");
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    ESP_LOGI(TAG, "延时完成，开始初始化各模块");
     
     // 按顺序初始化各模块
     ESP_ERROR_CHECK(system_init_nvs());
