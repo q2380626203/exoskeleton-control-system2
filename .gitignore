@@ -1,0 +1,54 @@
+# ESP-IDF Build System
+build/
+sdkconfig.old
+.vscode/
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+*.swp
+*.swo
+*~
+.idea/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.orig
+
+# Compilation
+*.o
+*.a
+*.so
+*.elf
+*.bin
+*.map
+
+# Dependencies
+dependencies.lock
+
+# Flash download tool logs
+flash_project_args
