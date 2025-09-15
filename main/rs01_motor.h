@@ -98,6 +98,7 @@ void Motor_Set_Zero(MI_Motor* motor);
 void Motor_ControlMode(MI_Motor* motor, float torque, float position, float speed, float kp, float kd);
 void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value);
 void Set_CurMode(MI_Motor* motor, float current);
+void Set_SpeedMode(MI_Motor* motor, float speed, float current_limit);
 void Change_Mode(MI_Motor* motor, uint8_t mode);
 
 // Helper function for data conversion

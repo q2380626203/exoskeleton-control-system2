@@ -10,6 +10,13 @@ uart_config_t motor_uart_config;
 MI_Motor motors[2];
 MotorDataCallback data_callback = NULL;
 
+// 调试打印时间控制（每2秒打印一次）
+static TickType_t lastPrintTime[2] = {0, 0};
+static const TickType_t PRINT_INTERVAL = pdMS_TO_TICKS(2000);
+
+// Static function declarations
+static void parse_can_frame(const uint8_t* can_payload);
+
 
 // Helper function to convert float to uint for CAN transmission
 int float_to_uint(float x, float x_min, float x_max, int bits) {
@@ -109,50 +116,105 @@ void UART_Rx_Init(MotorDataCallback callback) {
  * @brief Handle incoming UART data and parse motor feedback
  */
 void handle_uart_rx() {
-    uint8_t buffer[CAN_RAW_FRAME_LENGTH];
-    int length = uart_read_bytes(MOTOR_UART_NUM, buffer, CAN_RAW_FRAME_LENGTH, pdMS_TO_TICKS(10));
+    static uint8_t packet_buffer[CAN_RAW_FRAME_LENGTH];
+    static uint8_t packet_index = 0;
     
-    if (length == CAN_RAW_FRAME_LENGTH) {
-        // Parse the received CAN frame
-        uint32_t extended_id = (buffer[0] << 24) | (buffer[1] << 16) | (buffer[2] << 8) | buffer[3];
-        uint8_t motor_id = extended_id & 0xFF;
-        uint16_t data_field = (extended_id >> 8) & 0xFFFF;
-        uint8_t frame_type = (extended_id >> 24) & 0x1F;
-
-        // Find the motor by ID
-        MI_Motor* motor = NULL;
-        for (int i = 0; i < 2; i++) {
-            if (motors[i].id == motor_id) {
-                motor = &motors[i];
-                break;
+    // Read available bytes one by one to build complete packets
+    size_t available_bytes = 0;
+    uart_get_buffered_data_len(MOTOR_UART_NUM, &available_bytes);
+    
+    while (available_bytes > 0) {
+        uint8_t byte;
+        int length = uart_read_bytes(MOTOR_UART_NUM, &byte, 1, pdMS_TO_TICKS(1));
+        
+        if (length == 1) {
+            if (packet_index < CAN_RAW_FRAME_LENGTH) {
+                packet_buffer[packet_index++] = byte;
+            } else {
+                // Buffer overflow, reset
+                packet_index = 0;
+                packet_buffer[packet_index++] = byte;
+            }
+            
+            // When we have a complete packet, process it
+            if (packet_index >= CAN_RAW_FRAME_LENGTH) {
+                // 减少调试输出频率，只在需要时打印
+                // ESP_LOGI(TAG, "RX: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+                //          packet_buffer[0], packet_buffer[1], packet_buffer[2], packet_buffer[3],
+                //          packet_buffer[4], packet_buffer[5], packet_buffer[6], packet_buffer[7],
+                //          packet_buffer[8], packet_buffer[9], packet_buffer[10], packet_buffer[11]);
+                
+                parse_can_frame(packet_buffer);
+                packet_index = 0;
             }
         }
+        
+        // Update available bytes count
+        uart_get_buffered_data_len(MOTOR_UART_NUM, &available_bytes);
+    }
+}
 
-        if (motor != NULL && frame_type == 2) { // Motor feedback frame
-            // Parse feedback data from payload
-            uint16_t pos_raw = (buffer[4] << 8) | buffer[5];
-            uint16_t vel_raw = (buffer[6] << 8) | buffer[7];
-            uint16_t cur_raw = (buffer[8] << 8) | buffer[9];
-            uint16_t temp_raw = (buffer[10] << 8) | buffer[11];
+/**
+ * @brief Parses a received 12-byte CAN frame
+ * @param can_payload Pointer to the 12-byte array
+ */
+static void parse_can_frame(const uint8_t* can_payload) {
+    uint32_t extended_id = ((uint32_t)can_payload[0] << 24) |
+                           ((uint32_t)can_payload[1] << 16) |
+                           ((uint32_t)can_payload[2] << 8) |
+                           can_payload[3];
 
-            // Convert to float values
-            motor->position = uint_to_float(pos_raw, P_MIN, P_MAX, 16);
-            motor->velocity = uint_to_float(vel_raw, V_MIN, V_MAX, 16);
-            motor->current = uint_to_float(cur_raw, T_MIN, T_MAX, 16);
-            motor->temperature = (float)temp_raw / 10.0f;
+    uint8_t type = (extended_id >> 24) & 0x1F;
 
-            // Parse error flags from data_field
-            motor->error = (data_field >> 10) & 0x3F;
-            motor->mode = data_field & 0x3;
+    // We are interested in feedback frames (Type 2) and auto-report frames (Type 24)
+    if (type == 0x02 || type == 0x18) {
+        uint8_t motor_id = (extended_id >> 8) & 0xFF;
+        
+        // Check if the motor ID is one we are controlling
+        if (motor_id >= MOTER_1_ID && motor_id <= MOTER_2_ID) {
+            MI_Motor* motor = &motors[motor_id - 1]; // Use motor_id - 1 for array index
+            motor->id = motor_id; // Explicitly assign the parsed motor ID
+            const uint8_t* data = &can_payload[4];
 
-            motor->error_uncalibrated = (motor->error & 0x01) != 0;
-            motor->error_overload = (motor->error & 0x02) != 0;
-            motor->error_magnetic_encoder = (motor->error & 0x04) != 0;
-            motor->error_over_temperature = (motor->error & 0x08) != 0;
-            motor->error_driver_fault = (motor->error & 0x10) != 0;
-            motor->error_undervoltage = (motor->error & 0x20) != 0;
+            // Parse data payload according to Type 2 format
+            uint16_t raw_angle = (data[0] << 8) | data[1];
+            uint16_t raw_speed = (data[2] << 8) | data[3];
+            uint16_t raw_torque = (data[4] << 8) | data[5];
+            uint16_t raw_temp = (data[6] << 8) | data[7];
 
-            // Call callback if registered
+            // Convert raw data to physical units
+            motor->position = uint_to_float(raw_angle, P_MIN, P_MAX, 16);
+            motor->velocity = uint_to_float(raw_speed, V_MIN, V_MAX, 16);
+            motor->current = uint_to_float(raw_torque, T_MIN, T_MAX, 16);
+            motor->temperature = raw_temp / 10.0f;
+            
+            // --- Detailed Status Parsing ---
+            uint32_t status_part = extended_id >> 16;
+            
+            // Parse combined error code
+            motor->error = status_part & 0x3F; // Bits 16-21
+
+            // Parse individual error flags
+            motor->error_undervoltage      = (status_part >> 0) & 0x01; // Bit 16
+            motor->error_driver_fault      = (status_part >> 1) & 0x01; // Bit 17
+            motor->error_over_temperature  = (status_part >> 2) & 0x01; // Bit 18
+            motor->error_magnetic_encoder  = (status_part >> 3) & 0x01; // Bit 19
+            motor->error_overload          = (status_part >> 4) & 0x01; // Bit 20
+            motor->error_uncalibrated      = (status_part >> 5) & 0x01; // Bit 21
+
+            // Parse mode status
+            motor->mode = (status_part >> 6) & 0x03; // Bits 22-23
+
+            // --- 调试打印解析数据（每2秒一次） ---
+            TickType_t currentTime = xTaskGetTickCount();
+            int motorIndex = (motor->id == 1) ? 0 : 1; // 电机1对应索引0，电机2对应索引1
+            
+            if (currentTime - lastPrintTime[motorIndex] >= PRINT_INTERVAL) {
+                ESP_LOGI(TAG, "[Parsed] ID: %d, Pos: %.2f, Vel: %.2f, Cur: %.2f, Temp: %.1f, Mode: %d, Err: 0x%X",
+                         motor->id, motor->position, motor->velocity, motor->current, motor->temperature, motor->mode, motor->error);
+                lastPrintTime[motorIndex] = currentTime;
+            }
+
             if (data_callback) {
                 data_callback(motor);
             }
@@ -200,6 +262,14 @@ void Motor_Set_Zero(MI_Motor* motor) {
 
 void Set_CurMode(MI_Motor* motor, float current) {
     Set_SingleParameter(motor, IQ_REF, current);
+}
+
+void Set_SpeedMode(MI_Motor* motor, float speed, float current_limit) {
+    // 设置速度指令
+    Set_SingleParameter(motor, SPD_REF, speed);
+    
+    // 设置电流限制
+    Set_SingleParameter(motor, LIMIT_CUR, current_limit);
 }
 
 void Change_Mode(MI_Motor* motor, uint8_t mode) {
