@@ -185,14 +185,14 @@ void Motor_Speed_Control_Task(void* pvParameters) {
         
         // 先发送1号电机控制命令
         MI_Motor* motor1 = &motors[0];
-        Set_SpeedMode(motor1, target_speeds[0], speed_current_limit);
+        //Set_SpeedMode(motor1, target_speeds[0], speed_current_limit);
         
         // 等待10ms
         vTaskDelay(pdMS_TO_TICKS(10));
         
         // 再发送2号电机控制命令
         MI_Motor* motor2 = &motors[1];
-        Set_SpeedMode(motor2, target_speeds[1], speed_current_limit);
+        //Set_SpeedMode(motor2, target_speeds[1], speed_current_limit);
         
         // 等待剩余的时间完成100ms周期 (100ms - 10ms = 90ms)
         vTaskDelayUntil(&last_wake_time, task_period);

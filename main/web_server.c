@@ -82,6 +82,20 @@ static const char* html_page =
 "            <button class='btn btn-disable' onclick=\"motorControl(2,'disable')\">失能</button>"
 "        </div>"
 "        "
+"        <div class='section'>"
+"            <h3>🎮 运控模式控制</h3>"
+"            <div style='margin: 10px 0;'>"
+"                <div><label>力矩(Nm):</label><input type='number' id='torque' value='0' step='0.1' min='-17' max='17'></div>"
+"                <div><label>位置(rad):</label><input type='number' id='position' value='0' step='0.1' min='-12.57' max='12.57'></div>"
+"                <div><label>速度(rad/s):</label><input type='number' id='speed' value='0' step='0.1' min='-44' max='44'></div>"
+"                <div><label>Kp:</label><input type='number' id='kp' value='0' step='0.1' min='0' max='500'></div>"
+"                <div><label>Kd:</label><input type='number' id='kd' value='0.1' step='0.1' min='0' max='5'></div>"
+"            </div>"
+"            <button class='btn btn-enable' onclick=\"controlMotor(1)\">控制电机1</button>"
+"            <button class='btn btn-enable' onclick=\"controlMotor(2)\">控制电机2</button>"
+"            <button class='btn btn-alt' onclick=\"controlBoth()\">同时控制</button>"
+"        </div>"
+"        "
 "        "
 "        <div class='section'>"
 "            <h3>交替速度控制</h3>"
@@ -147,6 +161,44 @@ static const char* html_page =
 "                current_limit: parseFloat(document.getElementById('current_limit').value)"
 "            };"
 "            fetch('/config', {"
+"                method: 'POST',"
+"                headers: {'Content-Type': 'application/json'},"
+"                body: JSON.stringify(data)"
+"            })"
+"            .then(r => r.text())"
+"            .then(data => alert(data))"
+"            .catch(e => alert('错误: ' + e));"
+"        }"
+"        "
+"        function controlMotor(motorId) {"
+"            console.log('运控模式控制电机:', motorId);"
+"            const data = {"
+"                torque: parseFloat(document.getElementById('torque').value),"
+"                position: parseFloat(document.getElementById('position').value),"
+"                speed: parseFloat(document.getElementById('speed').value),"
+"                kp: parseFloat(document.getElementById('kp').value),"
+"                kd: parseFloat(document.getElementById('kd').value)"
+"            };"
+"            fetch('/control/' + motorId, {"
+"                method: 'POST',"
+"                headers: {'Content-Type': 'application/json'},"
+"                body: JSON.stringify(data)"
+"            })"
+"            .then(r => r.text())"
+"            .then(data => alert(data))"
+"            .catch(e => alert('错误: ' + e));"
+"        }"
+"        "
+"        function controlBoth() {"
+"            console.log('运控模式控制双电机');"
+"            const data = {"
+"                torque: parseFloat(document.getElementById('torque').value),"
+"                position: parseFloat(document.getElementById('position').value),"
+"                speed: parseFloat(document.getElementById('speed').value),"
+"                kp: parseFloat(document.getElementById('kp').value),"
+"                kd: parseFloat(document.getElementById('kd').value)"
+"            };"
+"            fetch('/control/both', {"
 "                method: 'POST',"
 "                headers: {'Content-Type': 'application/json'},"
 "                body: JSON.stringify(data)"
@@ -332,6 +384,85 @@ static esp_err_t config_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+static esp_err_t control_handler(httpd_req_t *req)
+{
+    char url[64];
+    strncpy(url, req->uri, sizeof(url) - 1);
+    url[sizeof(url) - 1] = '\0';
+
+    ESP_LOGI(TAG, "运控模式请求: %s", url);
+
+    // 读取JSON数据
+    char buf[300];
+    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+    if (ret <= 0) {
+        httpd_resp_send(req, "读取数据失败", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    buf[ret] = '\0';
+
+    ESP_LOGI(TAG, "收到运控参数: %s", buf);
+
+    // 解析JSON参数
+    float torque = 0.0f;
+    float position = 0.0f;
+    float speed = 0.0f;
+    float kp = 20.0f;
+    float kd = 1.0f;
+
+    char *p;
+    if ((p = strstr(buf, "\"torque\":")) != NULL) {
+        torque = atof(p + 9);
+    }
+    if ((p = strstr(buf, "\"position\":")) != NULL) {
+        position = atof(p + 11);
+    }
+    if ((p = strstr(buf, "\"speed\":")) != NULL) {
+        speed = atof(p + 8);
+    }
+    if ((p = strstr(buf, "\"kp\":")) != NULL) {
+        kp = atof(p + 5);
+    }
+    if ((p = strstr(buf, "\"kd\":")) != NULL) {
+        kd = atof(p + 5);
+    }
+
+    ESP_LOGI(TAG, "解析参数: 力矩=%.2f, 位置=%.2f, 速度=%.2f, Kp=%.1f, Kd=%.1f",
+             torque, position, speed, kp, kd);
+
+    if (web_motors == NULL) {
+        httpd_resp_send(req, "电机未初始化", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    // 判断控制哪个电机
+    if (strstr(url, "/control/1")) {
+        // 控制电机1
+        Motor_ControlMode(&web_motors[0], torque, position, speed, kp, kd);
+        httpd_resp_send(req, "电机1运控模式控制成功", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGI(TAG, "电机1运控模式控制");
+    }
+    else if (strstr(url, "/control/2")) {
+        // 控制电机2
+        Motor_ControlMode(&web_motors[1], torque, position, speed, kp, kd);
+        httpd_resp_send(req, "电机2运控模式控制成功", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGI(TAG, "电机2运控模式控制");
+    }
+    else if (strstr(url, "/control/both")) {
+        // 同时控制两个电机
+        Motor_ControlMode(&web_motors[0], torque, position, speed, kp, kd);
+        vTaskDelay(pdMS_TO_TICKS(10)); // 短暂延时
+        Motor_ControlMode(&web_motors[1], torque, position, speed, kp, kd);
+        httpd_resp_send(req, "双电机运控模式控制成功", HTTPD_RESP_USE_STRLEN);
+        ESP_LOGI(TAG, "双电机运控模式控制");
+    }
+    else {
+        httpd_resp_send(req, "无效的控制目标", HTTPD_RESP_USE_STRLEN);
+    }
+
+    return ESP_OK;
+}
+
 static esp_err_t status_handler(httpd_req_t *req)
 {
     ESP_LOGI(TAG, "电机状态请求");
@@ -363,6 +494,9 @@ static const httpd_uri_t uris[] = {
     { .uri = "/mode/flat",    .method = HTTP_POST, .handler = mode_handler },
     { .uri = "/mode/stairs",  .method = HTTP_POST, .handler = mode_handler },
     { .uri = "/config",       .method = HTTP_POST, .handler = config_handler },
+    { .uri = "/control/1",    .method = HTTP_POST, .handler = control_handler },
+    { .uri = "/control/2",    .method = HTTP_POST, .handler = control_handler },
+    { .uri = "/control/both", .method = HTTP_POST, .handler = control_handler },
     { .uri = "/status",       .method = HTTP_GET,  .handler = status_handler },
 };
 

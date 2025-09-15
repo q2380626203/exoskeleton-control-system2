@@ -91,18 +91,18 @@ esp_err_t system_init_exoskeleton(void)
     // 等待UART稳定
     vTaskDelay(pdMS_TO_TICKS(500));
     
-    // 设置电机为速度模式
-    ESP_LOGI(TAG, "设置电机为速度模式...");
+    // 设置电机为运控模式
+    ESP_LOGI(TAG, "设置电机为运控模式...");
     for(int i = 0; i < 2; i++) {
         MI_Motor* motor = &motors[i];
-        Change_Mode(motor, SPEED_MODE);
+        Change_Mode(motor, CTRL_MODE);
         vTaskDelay(pdMS_TO_TICKS(50));
-        
+
         // 使能电机
         Motor_Enable(motor);
         vTaskDelay(pdMS_TO_TICKS(50));
-        
-        ESP_LOGI(TAG, "电机 %d 已设置为速度模式并使能", motor->id);
+
+        ESP_LOGI(TAG, "电机 %d 已设置为运控模式并使能", motor->id);
     }
     
     ESP_LOGI(TAG, "电机模式设置完成");

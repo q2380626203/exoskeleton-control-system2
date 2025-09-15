@@ -18,6 +18,21 @@ static const TickType_t PRINT_INTERVAL = pdMS_TO_TICKS(2000);
 static void parse_can_frame(const uint8_t* can_payload);
 
 
+// Helper function for linear mapping (for Motor_ControlMode)
+uint16_t float_to_uint16_linear(float value, float min_val, float max_val) {
+    // 对称映射：0值映射到0x8000(32768)
+    if (value < min_val) value = min_val;
+    if (value > max_val) value = max_val;
+
+    // 计算相对于中点的偏移
+    float center = (min_val + max_val) / 2.0f;
+    float half_range = (max_val - min_val) / 2.0f;
+
+    // 将[-half_range, half_range]映射到[0, 65535]，中心点0x8000
+    float normalized = (value - center) / half_range;  // [-1, 1]
+    return (uint16_t)(32768 + normalized * 32768);     // 0x8000 ± 32768
+}
+
 // Helper function to convert float to uint for CAN transmission
 int float_to_uint(float x, float x_min, float x_max, int bits) {
     float span = x_max - x_min;
@@ -311,25 +326,28 @@ void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value) {
 
 void Motor_ControlMode(MI_Motor* motor, float torque, float position, float speed, float kp, float kd) {
     can_frame_t frame;
-    frame.type = 1;
-    frame.data = 0x7005; // Control mode parameter
-    frame.target_id = motor->id;
-    
-    // Pack control parameters into payload
-    uint16_t pos_cmd = float_to_uint(position, P_MIN, P_MAX, 16);
-    uint16_t vel_cmd = float_to_uint(speed, V_MIN, V_MAX, 16);
-    uint16_t kp_cmd = float_to_uint(kp, KP_MIN, KP_MAX, 12);
-    uint16_t kd_cmd = float_to_uint(kd, KD_MIN, KD_MAX, 12);
-    uint16_t torque_cmd = float_to_uint(torque, T_MIN, T_MAX, 16);
-    
-    frame.payload[0] = pos_cmd >> 8;
-    frame.payload[1] = pos_cmd & 0xFF;
-    frame.payload[2] = vel_cmd >> 8;
-    frame.payload[3] = vel_cmd & 0xFF;
-    frame.payload[4] = (kp_cmd >> 4) & 0xFF;
-    frame.payload[5] = ((kp_cmd & 0xF) << 4) | ((kd_cmd >> 8) & 0xF);
-    frame.payload[6] = kd_cmd & 0xFF;
-    frame.payload[7] = torque_cmd & 0xFF;
-    
+
+    // 数据转换：使用线性映射
+    uint16_t torque_cmd = float_to_uint16_linear(torque, T_MIN, T_MAX);       // 力矩 -17~17Nm
+    uint16_t pos_cmd = float_to_uint16_linear(position, P_MIN, P_MAX);        // 角度 -12.57~12.57f
+    uint16_t vel_cmd = float_to_uint16_linear(speed, V_MIN, V_MAX);           // 角速度 -44~44rad/s
+    uint16_t kp_cmd = float_to_uint16_linear(kp, KP_MIN, KP_MAX);             // Kp 0.0~500.0
+    uint16_t kd_cmd = float_to_uint16_linear(kd, KD_MIN, KD_MAX);             // Kd 0.0~5.0
+
+    // 运控模式帧头构造
+    frame.type = 0x01;                           // 运控模式类型
+    frame.data = torque_cmd;                     // 力矩值直接放在data字段(16位)
+    frame.target_id = motor->id;                 // 目标电机CAN_ID
+
+    // 8字节数据区：目标角度 + 目标角速度 + Kp + Kd
+    frame.payload[0] = (pos_cmd >> 8) & 0xFF;    // 目标角度高字节
+    frame.payload[1] = pos_cmd & 0xFF;           // 目标角度低字节
+    frame.payload[2] = (vel_cmd >> 8) & 0xFF;    // 目标角速度高字节
+    frame.payload[3] = vel_cmd & 0xFF;           // 目标角速度低字节
+    frame.payload[4] = (kp_cmd >> 8) & 0xFF;     // Kp高字节
+    frame.payload[5] = kp_cmd & 0xFF;            // Kp低字节
+    frame.payload[6] = (kd_cmd >> 8) & 0xFF;     // Kd高字节
+    frame.payload[7] = kd_cmd & 0xFF;            // Kd低字节
+
     UART_Send_Frame(&frame);
 }
