@@ -13,7 +13,6 @@
 #include "rs01_motor.h"
 #include "button_detector.h"
 #include "voice_module.h"
-#include "web_server.h"
 
 static const char *TAG = "system_init";
 
@@ -24,8 +23,6 @@ static const char *TAG = "system_init";
 #define DEFAULT_MAX_STA_CONN   4
 
 // 全局变量
-static VoiceModule voiceModule;
-static TaskHandle_t buttonTaskHandle = NULL;
 
 // 外部电机数组
 extern MI_Motor motors[];
@@ -81,9 +78,9 @@ esp_err_t system_init_exoskeleton(void)
 {
     ESP_LOGI(TAG, "初始化外骨骼控制模块...");
     
-    // 初始化语音模块
-    voice_module_init(&voiceModule);
-    voice_speak(&voiceModule, "系统启动中");
+    // 语音模块已禁用 - 为电机数据传输让出UART2
+    // voice_module_init(&voiceModule);
+    // voice_speak(&voiceModule, "系统启动中");
     
     // 初始化电机通信
     UART_Rx_Init(motor_data_callback);
@@ -95,11 +92,23 @@ esp_err_t system_init_exoskeleton(void)
     ESP_LOGI(TAG, "设置电机为运控模式...");
     for(int i = 0; i < 2; i++) {
         MI_Motor* motor = &motors[i];
+
+        // 设置上报时间参数
+        ESP_LOGI(TAG, "设置电机 %d 上报时间参数...", motor->id);
+        Set_SingleParameter(motor, REPORT_TIME, 1.0f);
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+
         Change_Mode(motor, CTRL_MODE);
         vTaskDelay(pdMS_TO_TICKS(50));
 
         // 使能电机
         Motor_Enable(motor);
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // 开启电机上报
+        ESP_LOGI(TAG, "开启电机 %d 上报功能...", motor->id);
+        Motor_SetReporting(motor, true);
         vTaskDelay(pdMS_TO_TICKS(50));
 
         ESP_LOGI(TAG, "电机 %d 已设置为运控模式并使能", motor->id);
@@ -108,17 +117,12 @@ esp_err_t system_init_exoskeleton(void)
     ESP_LOGI(TAG, "电机模式设置完成");
     
     // 初始化按键检测
-    button_init();
-    
+    // button_init();
+
     // 创建按键处理任务
-    xTaskCreate(buttonProcessTask, "ButtonProcess", 4096, NULL, 5, &buttonTaskHandle);
+    // xTaskCreate(buttonProcessTask, "ButtonProcess", 4096, NULL, 5, &buttonTaskHandle);
     
-    // 设置Web服务器的电机指针
-    web_server_set_motors(motors);
-    
-    // 启动Web服务器
-    ESP_ERROR_CHECK(web_server_start());
-    
+
     ESP_LOGI(TAG, "外骨骼控制模块初始化完成");
     return ESP_OK;
 }
@@ -137,8 +141,8 @@ esp_err_t system_init_all(void)
     ESP_ERROR_CHECK(system_init_wifi());
     ESP_ERROR_CHECK(system_init_exoskeleton());
     
-    // 系统初始化完成提示
-    voice_speak(&voiceModule, "外骨骼WiFi控制系统启动完成");
+    // 系统初始化完成提示（语音模块已禁用）
+    // voice_speak(&voiceModule, "外骨骼WiFi控制系统启动完成");
     ESP_LOGI(TAG, "系统初始化完成！");
     
     return ESP_OK;

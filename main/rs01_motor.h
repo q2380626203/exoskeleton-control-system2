@@ -48,6 +48,8 @@
 #define LOC_REF         0x7016    // Position Mode Angle Command (float, rad)
 #define LIMIT_SPD       0x7017    // Position Mode (CSP) Speed Limit (float, 0~44rad/s)
 #define LIMIT_CUR       0x7018    // Speed/Position Mode Current Limit (float, 0~23A)
+#define VELOCITY_FILTER 0x7021    // Velocity Filter Value (float, filter coefficient)
+#define REPORT_TIME     0x7026    // Report Time Setting (int, 1 for enable reporting)
 
 // Structure for outgoing CAN frames (based on RS01 protocol)
 typedef struct {
@@ -100,6 +102,7 @@ void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value);
 void Set_CurMode(MI_Motor* motor, float current);
 void Set_SpeedMode(MI_Motor* motor, float speed, float current_limit);
 void Change_Mode(MI_Motor* motor, uint8_t mode);
+void Motor_SetReporting(MI_Motor* motor, bool enable);
 
 // Helper function for data conversion
 int float_to_uint(float x, float x_min, float x_max, int bits);

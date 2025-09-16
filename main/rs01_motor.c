@@ -324,6 +324,25 @@ void Set_SingleParameter(MI_Motor* motor, uint16_t parameter, float value) {
     UART_Send_Frame(&frame);
 }
 
+void Motor_SetReporting(MI_Motor* motor, bool enable) {
+    can_frame_t frame;
+    frame.type = 0x18; // Type 24 - 上报控制类型
+    frame.data = MASTER_ID; // 使用MASTER_ID
+    frame.target_id = motor->id;
+
+    // 设置数据区的8位固定序列
+    frame.payload[0] = 0x01;
+    frame.payload[1] = 0x02;
+    frame.payload[2] = 0x03;
+    frame.payload[3] = 0x04;
+    frame.payload[4] = 0x05;
+    frame.payload[5] = 0x06;
+    frame.payload[6] = enable ? 0x01 : 0x00; // 0x00关闭, 0x01开启
+    frame.payload[7] = 0x00; // 保留位
+
+    UART_Send_Frame(&frame);
+}
+
 void Motor_ControlMode(MI_Motor* motor, float torque, float position, float speed, float kp, float kd) {
     can_frame_t frame;
 
