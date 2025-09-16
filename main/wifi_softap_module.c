@@ -21,6 +21,7 @@ static bool is_started = false;
 static uint8_t connected_count = 0;
 static wifi_softap_event_cb_t user_event_callback = NULL;
 
+
 /**
  * @brief WiFi事件处理函数
  */
@@ -32,13 +33,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         connected_count++;
         ESP_LOGI(TAG, "设备 "MACSTR" 连接，AID=%d，当前连接数=%d",
                  MAC2STR(event->mac), event->aid, connected_count);
+
     } else if (event_id == WIFI_EVENT_AP_STADISCONNECTED) {
         wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
         connected_count--;
         ESP_LOGI(TAG, "设备 "MACSTR" 断开，AID=%d，原因=%d，当前连接数=%d",
                  MAC2STR(event->mac), event->aid, event->reason, connected_count);
     }
-    
+
     // 调用用户回调函数
     if (user_event_callback != NULL) {
         user_event_callback(event_id, event_data);
@@ -84,18 +86,19 @@ esp_err_t wifi_softap_init(const wifi_softap_config_t* config, wifi_softap_event
             .max_connection = config->max_connection,
             .authmode = config->authmode,
             .pmf_cfg = {
-                .required = true,
+                .required = false,  // 开放模式不需要PMF
             },
         },
     };
-    
+
     // 复制SSID和密码
     strncpy((char*)wifi_config.ap.ssid, config->ssid, sizeof(wifi_config.ap.ssid) - 1);
     strncpy((char*)wifi_config.ap.password, config->password, sizeof(wifi_config.ap.password) - 1);
-    
+
     // 如果密码为空，设置为开放模式
     if (strlen(config->password) == 0) {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+        wifi_config.ap.pmf_cfg.required = false;  // 开放模式明确禁用PMF
     }
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -121,16 +124,12 @@ uint8_t wifi_softap_get_connected_count(void)
 wifi_softap_config_t wifi_softap_get_default_config(void)
 {
     wifi_softap_config_t default_config = {
-        .ssid = "ESP32-SoftAP",
-        .password = "12345678",
+        .ssid = "ESP32-Exoskeleton",
+        .password = "",  // 无密码
         .channel = 1,
         .max_connection = 4,
-#ifdef CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT
-        .authmode = WIFI_AUTH_WPA3_PSK,
-#else
-        .authmode = WIFI_AUTH_WPA2_PSK,
-#endif
+        .authmode = WIFI_AUTH_OPEN,  // 开放模式，无需密码
     };
-    
+
     return default_config;
 }
