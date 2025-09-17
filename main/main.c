@@ -16,9 +16,16 @@
 #include "uart_motor_transmit.h"
 #include "motor_web_control.h"
 #include "alternating_speed.h"
+#include "continuous_torque_velocity_mode.h"
 
 // 外部变量声明
 extern MotorDataCallback data_callback;
+
+// RS01电机库的外部变量
+extern MI_Motor motors[2];
+
+// 交替速度模块的外部变量
+extern bool alternating_speed_enabled;
 
 static const char *TAG = "exoskeleton_main";
 
@@ -26,12 +33,21 @@ static const char *TAG = "exoskeleton_main";
 float motor_target_speed[2] = {0.0f, 0.0f};  // 目标速度值数组，索引对应电机ID-1 (rad/s)
 bool motor_speed_control_enabled = false;
 
-// 全局运控模式参数（数组索引对应电机ID-1）
-float control_position[2] = {0.0f, 0.0f};     // 位置设定 (rad)
-float control_speed[2] = {0.0f, 0.0f};        // 速度设定 (rad/s)
-float control_torque[2] = {0.0f, 0.0f};       // 力矩设定 (Nm)
-float control_kp[2] = {0.0f, 0.0f};           // Kp参数
-float control_kd[2] = {0.0f, 0.0f};           // Kd参数
+// 统一的电机控制参数结构体
+typedef struct {
+    float torque;      // 力矩设定 (Nm)
+    float position;    // 位置设定 (rad)
+    float speed;       // 速度设定 (rad/s)
+    float kp;          // Kp参数
+    float kd;          // Kd参数
+} motor_control_params_t;
+
+// 全局电机控制参数（数组索引对应电机ID-1）
+motor_control_params_t motor_params[2] = {{0}};
+
+// 参数变化检测缓存
+motor_control_params_t sent_params[2] = {{0}};
+
 
 // 串口数据解析任务相关变量
 static TaskHandle_t uart_parse_task_handle = NULL;
@@ -39,6 +55,28 @@ bool uart_parse_enabled = true;
 
 // 电机数据传输任务相关变量
 static TaskHandle_t motor_transmit_task_handle = NULL;
+
+// 运动模式检测任务相关变量
+static TaskHandle_t motion_detection_task_handle = NULL;
+
+// 参数变化检测阈值
+#define PARAM_CHANGE_THRESHOLD 0.001f
+
+// 位置记录缓存区
+position_ring_buffer_t position_recorder;
+
+// 运动模式状态管理
+motion_mode_state_t motion_state;
+
+// 运动模式检测功能开关
+bool motion_mode_detection_enabled = false;
+
+// 导出统一的电机参数结构体供其他模块使用
+extern motor_control_params_t motor_params[2];
+
+// 函数声明
+void set_motor_params(int motor_id, float torque, float position, float speed, float kp, float kd);
+void unified_motor_control(int motor_id, const motor_control_params_t* params);
 
 
 
@@ -51,19 +89,21 @@ static TaskHandle_t motor_transmit_task_handle = NULL;
  * @param motor 更新的电机数据指针
  */
 void motor_data_update_callback(MI_Motor* motor) {
-    ESP_LOGD(TAG, "电机%d数据更新: 位置=%.3f, 速度=%.3f, 电流=%.3f, 温度=%.1f°C", 
+    ESP_LOGD(TAG, "电机%d数据更新: 位置=%.3f, 速度=%.3f, 电流=%.3f, 温度=%.1f°C",
              motor->id, motor->position, motor->velocity, motor->current, motor->temperature);
-    
+
     // 检查电机错误状态
     if (motor->error != 0) {
         ESP_LOGW(TAG, "电机%d错误状态: 0x%02X", motor->id, motor->error);
     }
-    
+
+
     // 这里可以添加其他数据处理逻辑，比如：
     // - 更新电机状态到全局变量
     // - 触发安全保护机制
     // - 记录数据到日志等
 }
+
 
 /**
  * @brief 串口数据解析任务
@@ -71,11 +111,11 @@ void motor_data_update_callback(MI_Motor* motor) {
  */
 void UART_Parse_Task(void* pvParameters) {
     ESP_LOGI(TAG, "串口数据解析任务启动");
-    
+
     while (uart_parse_enabled) {
         // 调用RS01库的串口数据处理函数
         handle_uart_rx();
-        
+
         // 短暂延时，避免占用过多CPU时间
         vTaskDelay(pdMS_TO_TICKS(5)); // 5ms延时，200Hz解析频率
     }
@@ -84,6 +124,114 @@ void UART_Parse_Task(void* pvParameters) {
     uart_parse_task_handle = NULL;
     vTaskDelete(NULL);
 }
+
+/**
+ * @brief 运动模式检测任务
+ * @param pvParameters 任务参数（未使用）
+ */
+void Motion_Detection_Task(void* pvParameters) {
+    ESP_LOGI(TAG, "运动模式检测任务启动");
+
+    TickType_t last_position_check = xTaskGetTickCount();
+    TickType_t last_mode_check = xTaskGetTickCount();
+    TickType_t last_torque_update = xTaskGetTickCount();
+    const TickType_t position_check_interval = pdMS_TO_TICKS(100); // 每100ms检查一次位置
+    const TickType_t mode_check_interval = pdMS_TO_TICKS(1000);    // 每1秒进行一次模式检测
+    const TickType_t torque_update_interval = pdMS_TO_TICKS(100);  // 每100ms更新一次力矩渐变
+
+    while (1) {
+        TickType_t current_time = xTaskGetTickCount();
+        uint32_t timestamp = current_time * portTICK_PERIOD_MS;
+
+        if (motion_mode_detection_enabled) {
+            // 检查位置记录（从电机1获取位置数据）
+            if ((current_time - last_position_check) >= position_check_interval) {
+                // 获取电机1的当前位置并记录变化
+                position_ring_buffer_add_if_changed(&position_recorder, motors[0].position, timestamp);
+                last_position_check = current_time;
+            }
+
+            // 运动模式检测和参数更新
+            if ((current_time - last_mode_check) >= mode_check_interval) {
+                motion_mode_t detected_mode = detect_motion_mode(&position_recorder, timestamp, &motion_state);
+
+                // 检查是否需要更新模式
+                if (detected_mode != motion_state.current_mode) {
+                    ESP_LOGI(TAG, "运动模式切换: %s",
+                             detected_mode == MOTION_MODE_STATIC ? "静止" :
+                             detected_mode == MOTION_MODE_WALKING ? "行走" : "爬楼");
+
+                    // 如果检测到静止模式，清理位置缓存区避免旧数据影响
+                    if (detected_mode == MOTION_MODE_STATIC) {
+                        position_ring_buffer_clear(&position_recorder);
+                        ESP_LOGI(TAG, "【静止确认】清理位置缓存区，避免旧数据影响");
+                    }
+                }
+
+                // 更新两个电机的参数（包括力矩渐变）
+                motor_params_t motor1_params, motor2_params;
+                update_motion_mode_and_get_params(&motion_state, detected_mode, timestamp, 1, &motor1_params);
+                update_motion_mode_and_get_params(&motion_state, detected_mode, timestamp, 2, &motor2_params);
+
+                // 应用电机参数到统一结构体
+                motor_params[0].speed = (float)motor1_params.velocity;
+                motor_params[0].torque = motor1_params.torque;
+                motor_params[0].kd = (float)motor1_params.kd;
+                motor_params[0].position = 0.0f; // 运动检测模式位置参数为0
+                motor_params[0].kp = 0.0f;       // 运动检测模式kp参数为0
+
+                motor_params[1].speed = (float)motor2_params.velocity;
+                motor_params[1].torque = motor2_params.torque;
+                motor_params[1].kd = (float)motor2_params.kd;
+                motor_params[1].position = 0.0f; // 运动检测模式位置参数为0
+                motor_params[1].kp = 0.0f;       // 运动检测模式kp参数为0
+
+                // 调试：显示即将发送的参数
+                if (detected_mode == MOTION_MODE_STATIC) {
+                    ESP_LOGI(TAG, "【静止参数】电机1: 速度=%.1f, 力矩=%.1f, kd=%.1f",
+                             motor_params[0].speed, motor_params[0].torque, motor_params[0].kd);
+                    ESP_LOGI(TAG, "【静止参数】电机2: 速度=%.1f, 力矩=%.1f, kd=%.1f",
+                             motor_params[1].speed, motor_params[1].torque, motor_params[1].kd);
+                }
+
+                // 立即发送参数给电机
+                unified_motor_control(0, &motor_params[0]);
+                unified_motor_control(1, &motor_params[1]);
+
+                last_mode_check = current_time;
+            }
+
+            // 力矩渐变更新（高频率更新以实现平滑渐变）
+            if ((current_time - last_torque_update) >= torque_update_interval) {
+                motor_params_t motor1_params, motor2_params;
+
+                // 在静止确认期间，使用静止模式而不是当前模式
+                motion_mode_t update_mode = motion_state.in_static_confirmation ? MOTION_MODE_STATIC : motion_state.current_mode;
+
+                update_motion_mode_and_get_params(&motion_state, update_mode, timestamp, 1, &motor1_params);
+                update_motion_mode_and_get_params(&motion_state, update_mode, timestamp, 2, &motor2_params);
+
+                // 只更新力矩值（速度和kd保持不变）
+                motor_params[0].torque = motor1_params.torque;
+                motor_params[1].torque = motor2_params.torque;
+
+                // 立即发送更新的力矩给电机
+                unified_motor_control(0, &motor_params[0]);
+                unified_motor_control(1, &motor_params[1]);
+
+                last_torque_update = current_time;
+            }
+        }
+
+        // 任务延时
+        vTaskDelay(pdMS_TO_TICKS(50)); // 50ms延时
+    }
+
+    ESP_LOGI(TAG, "运动模式检测任务退出");
+    motion_detection_task_handle = NULL;
+    vTaskDelete(NULL);
+}
+
 
 /**
  * @brief 启动串口数据解析任务
@@ -123,6 +271,130 @@ void Stop_UART_Parse_Task(void) {
     }
 }
 
+/**
+ * @brief 启动运动模式检测任务
+ */
+void Start_Motion_Detection_Task(void) {
+    if (motion_detection_task_handle == NULL) {
+        BaseType_t result = xTaskCreate(
+            Motion_Detection_Task,
+            "MotionDetect",
+            4096,  // 栈大小4096字节
+            NULL,
+            3,     // 中等优先级
+            &motion_detection_task_handle
+        );
+
+        if (result == pdPASS) {
+            ESP_LOGI(TAG, "运动模式检测任务创建成功");
+        } else {
+            ESP_LOGE(TAG, "运动模式检测任务创建失败");
+        }
+    } else {
+        ESP_LOGW(TAG, "运动模式检测任务已在运行");
+    }
+}
+
+/**
+ * @brief 停止运动模式检测任务
+ */
+void Stop_Motion_Detection_Task(void) {
+    if (motion_detection_task_handle != NULL) {
+        vTaskDelete(motion_detection_task_handle);
+        motion_detection_task_handle = NULL;
+        ESP_LOGI(TAG, "运动模式检测任务已停止");
+    }
+}
+
+
+/**
+ * @brief 检查电机参数是否发生变化
+ * @param motor_id 电机ID (0或1，对应电机1和电机2)
+ * @param params 新的电机参数
+ * @return true 参数发生变化，false 参数未变化
+ */
+bool motor_params_changed(int motor_id, const motor_control_params_t* params) {
+    if (motor_id < 0 || motor_id >= 2 || params == NULL) return false;
+
+    const float threshold = 0.001f; // 参数变化阈值
+
+    return (fabsf(params->torque - sent_params[motor_id].torque) > threshold) ||
+           (fabsf(params->position - sent_params[motor_id].position) > threshold) ||
+           (fabsf(params->speed - sent_params[motor_id].speed) > threshold) ||
+           (fabsf(params->kp - sent_params[motor_id].kp) > threshold) ||
+           (fabsf(params->kd - sent_params[motor_id].kd) > threshold);
+}
+
+/**
+ * @brief 更新已发送参数缓存
+ * @param motor_id 电机ID (0或1，对应电机1和电机2)
+ * @param params 已发送的参数
+ */
+void update_sent_params(int motor_id, const motor_control_params_t* params) {
+    if (motor_id < 0 || motor_id >= 2 || params == NULL) return;
+
+    sent_params[motor_id] = *params;
+}
+
+/**
+ * @brief 统一的电机控制函数 - 集中调用Motor_ControlMode
+ * @param motor_id 电机ID (0或1，对应电机1和电机2)
+ * @param params 电机控制参数
+ */
+void unified_motor_control(int motor_id, const motor_control_params_t* params) {
+    if (motor_id < 0 || motor_id >= 2 || params == NULL) {
+        ESP_LOGE(TAG, "无效的电机ID或参数: motor_id=%d", motor_id);
+        return;
+    }
+
+    // 检查参数是否发生变化，只有发生变化时才发送控制指令
+    if (!motor_params_changed(motor_id, params)) {
+        return; // 参数未变化，跳过发送
+    }
+
+    // 临界区保护，避免多任务并发访问
+    portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    portENTER_CRITICAL(&mux);
+
+    // 调用实际的电机控制函数
+    Motor_ControlMode(&motors[motor_id], params->torque, params->position,
+                      params->speed, params->kp, params->kd);
+
+    portEXIT_CRITICAL(&mux);
+
+    // 更新已发送参数缓存
+    update_sent_params(motor_id, params);
+
+    ESP_LOGI(TAG, "电机%d控制更新: 力矩=%.2f, 位置=%.2f, 速度=%.2f, Kp=%.2f, Kd=%.2f",
+             motor_id+1, params->torque, params->position, params->speed,
+             params->kp, params->kd);
+}
+
+/**
+ * @brief 设置电机控制参数
+ * @param motor_id 电机ID (0或1，对应电机1和电机2)
+ * @param torque 力矩参数
+ * @param position 位置参数
+ * @param speed 速度参数
+ * @param kp Kp参数
+ * @param kd Kd参数
+ */
+void set_motor_params(int motor_id, float torque, float position, float speed, float kp, float kd) {
+    if (motor_id < 0 || motor_id >= 2) {
+        ESP_LOGE(TAG, "无效的电机ID: %d", motor_id);
+        return;
+    }
+
+    motor_params[motor_id].torque = torque;
+    motor_params[motor_id].position = position;
+    motor_params[motor_id].speed = speed;
+    motor_params[motor_id].kp = kp;
+    motor_params[motor_id].kd = kd;
+
+    // 立即执行控制
+    unified_motor_control(motor_id, &motor_params[motor_id]);
+}
+
 
 
 
@@ -160,6 +432,14 @@ void app_main(void)
     // 初始化整个系统
     ESP_ERROR_CHECK(system_init_all());
     
+    // 初始化位置记录缓存区
+    position_ring_buffer_init(&position_recorder);
+    ESP_LOGI(TAG, "位置记录缓存区初始化完成");
+
+    // 初始化运动模式状态管理
+    motion_mode_state_init(&motion_state);
+    ESP_LOGI(TAG, "运动模式状态管理初始化完成");
+
     // 更新电机数据回调函数为我们自定义的回调
     data_callback = motor_data_update_callback;
     ESP_LOGI(TAG, "已更新电机数据回调函数");
@@ -168,14 +448,16 @@ void app_main(void)
     ESP_LOGI(TAG, "启动RS01电机数据解析任务...");
     Start_UART_Parse_Task();
 
-    // 启动电机速度控制任务
-    Start_Motor_Speed_Control();
 
 
     // 初始化并启动电机数据传输功能
     ESP_LOGI(TAG, "初始化电机数据传输...");
     uart_motor_transmit_init();
     Start_Motor_Data_Transmit();
+
+    // 启动运动模式检测任务
+    ESP_LOGI(TAG, "启动运动模式检测任务...");
+    Start_Motion_Detection_Task();
 
     // 初始化电机控制网页模块
     ESP_LOGI(TAG, "初始化电机控制网页...");

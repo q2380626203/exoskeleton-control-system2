@@ -18,11 +18,20 @@
 // 引入main.c中的全局变量和函数
 extern float motor_target_speed[2];
 extern bool motor_speed_control_enabled;
-extern float control_position[2];
-extern float control_speed[2];
-extern float control_torque[2];
-extern float control_kp[2];
-extern float control_kd[2];
+
+// 统一的电机控制参数结构体
+typedef struct {
+    float torque;      // 力矩设定 (Nm)
+    float position;    // 位置设定 (rad)
+    float speed;       // 速度设定 (rad/s)
+    float kp;          // Kp参数
+    float kd;          // Kd参数
+} motor_control_params_t;
+
+extern motor_control_params_t motor_params[2];
+
+// 运动模式检测功能开关
+extern bool motion_mode_detection_enabled;
 
 
 // alternating_speed模块中的外部变量
@@ -31,6 +40,10 @@ extern int alternating_interval_ms;
 extern float alternating_speed_x;
 extern float alternating_speed_y;
 extern float speed_current_limit;
+extern float feedforward_torque_value;
+
+// continuous_torque_velocity_mode模块中的外部变量
+extern float climbing_mode_torque;
 
 // RS01电机库的外部变量和函数
 #include "rs01_motor.h"
@@ -71,7 +84,16 @@ esp_err_t motor_web_status_api_handler(httpd_req_t *req)
     // 添加系统状态
     cJSON_AddBoolToObject(json, "motor_control_enabled", motor_speed_control_enabled);
     cJSON_AddBoolToObject(json, "alternating_enabled", alternating_speed_enabled);
+    cJSON_AddBoolToObject(json, "motion_detection_enabled", motion_mode_detection_enabled);
     cJSON_AddNumberToObject(json, "walking_mode", Get_Current_Walking_Mode());
+
+    // 添加可配置参数状态
+    cJSON_AddNumberToObject(json, "feedforward_torque", feedforward_torque_value);
+    cJSON_AddNumberToObject(json, "climbing_torque", climbing_mode_torque);
+
+    // 添加冲突状态信息
+    cJSON_AddBoolToObject(json, "alternating_conflict", motion_mode_detection_enabled);
+    cJSON_AddBoolToObject(json, "motion_detection_conflict", alternating_speed_enabled);
 
     char *json_string = cJSON_Print(json);
     httpd_resp_set_type(req, "application/json");
@@ -118,27 +140,29 @@ esp_err_t motor_web_control_api_handler(httpd_req_t *req)
     const char *response_msg = "Unknown action";
 
     if (strcmp(action->valuestring, "start") == 0) {
-        Start_Motor_Speed_Control();
+        motor_speed_control_enabled = true;
         response_msg = "电机控制已启动";
         ESP_LOGI(TAG, "网页请求启动电机控制");
     }
     else if (strcmp(action->valuestring, "stop") == 0) {
         motor_speed_control_enabled = false;
         Stop_Alternating_Speed();
+        motion_mode_detection_enabled = false;
         // 停止所有电机
         motor_target_speed[0] = 0;
         motor_target_speed[1] = 0;
-        response_msg = "电机控制已停止";
-        ESP_LOGI(TAG, "网页请求停止电机控制");
+        response_msg = "电机控制已停止，所有模式已关闭";
+        ESP_LOGI(TAG, "网页请求停止电机控制，关闭所有模式");
     }
     else if (strcmp(action->valuestring, "emergency") == 0) {
         motor_speed_control_enabled = false;
         Stop_Alternating_Speed();
+        motion_mode_detection_enabled = false;
         motor_target_speed[0] = 0;
         motor_target_speed[1] = 0;
         // TODO: 添加紧急停止逻辑
-        response_msg = "紧急停止已执行";
-        ESP_LOGW(TAG, "网页请求紧急停止");
+        response_msg = "紧急停止已执行，所有模式已关闭";
+        ESP_LOGW(TAG, "网页请求紧急停止，关闭所有模式");
     }
     else if (strcmp(action->valuestring, "mode") == 0) {
         cJSON *mode = cJSON_GetObjectItem(json, "mode");
@@ -154,14 +178,34 @@ esp_err_t motor_web_control_api_handler(httpd_req_t *req)
         }
     }
     else if (strcmp(action->valuestring, "start_alternating") == 0) {
-        Start_Alternating_Speed();
-        response_msg = "交替行走模式已启动";
-        ESP_LOGI(TAG, "网页请求启动交替行走");
+        if (motion_mode_detection_enabled) {
+            response_msg = "启动失败：智能运动控制正在运行，请先关闭智能运动控制";
+            ESP_LOGW(TAG, "交替行走启动失败：智能运动控制冲突");
+        } else {
+            Start_Alternating_Speed();
+            response_msg = "交替行走模式已启动";
+            ESP_LOGI(TAG, "网页请求启动交替行走");
+        }
     }
     else if (strcmp(action->valuestring, "stop_alternating") == 0) {
         Stop_Alternating_Speed();
         response_msg = "交替行走模式已停止";
         ESP_LOGI(TAG, "网页请求停止交替行走");
+    }
+    else if (strcmp(action->valuestring, "enable_motion_detection") == 0) {
+        if (alternating_speed_enabled) {
+            response_msg = "启动失败：交替行走模式正在运行，请先停止交替行走";
+            ESP_LOGW(TAG, "智能运动控制启动失败：交替行走冲突");
+        } else {
+            motion_mode_detection_enabled = true;
+            response_msg = "智能运动模式检测已启用";
+            ESP_LOGI(TAG, "网页请求启用运动模式检测");
+        }
+    }
+    else if (strcmp(action->valuestring, "disable_motion_detection") == 0) {
+        motion_mode_detection_enabled = false;
+        response_msg = "智能运动模式检测已关闭";
+        ESP_LOGI(TAG, "网页请求关闭运动模式检测");
     }
 
     httpd_resp_send(req, response_msg, strlen(response_msg));
@@ -216,11 +260,11 @@ esp_err_t motor_web_params_api_handler(httpd_req_t *req)
             cJSON *kp = cJSON_GetObjectItem(motor1, "kp");
             cJSON *kd = cJSON_GetObjectItem(motor1, "kd");
 
-            if (pos) control_position[0] = pos->valuedouble;
-            if (speed) control_speed[0] = speed->valuedouble;
-            if (torque) control_torque[0] = torque->valuedouble;
-            if (kp) control_kp[0] = kp->valuedouble;
-            if (kd) control_kd[0] = kd->valuedouble;
+            if (pos) motor_params[0].position = pos->valuedouble;
+            if (speed) motor_params[0].speed = speed->valuedouble;
+            if (torque) motor_params[0].torque = torque->valuedouble;
+            if (kp) motor_params[0].kp = kp->valuedouble;
+            if (kd) motor_params[0].kd = kd->valuedouble;
         }
 
         if (motor2) {
@@ -230,12 +274,17 @@ esp_err_t motor_web_params_api_handler(httpd_req_t *req)
             cJSON *kp = cJSON_GetObjectItem(motor2, "kp");
             cJSON *kd = cJSON_GetObjectItem(motor2, "kd");
 
-            if (pos) control_position[1] = pos->valuedouble;
-            if (speed) control_speed[1] = speed->valuedouble;
-            if (torque) control_torque[1] = torque->valuedouble;
-            if (kp) control_kp[1] = kp->valuedouble;
-            if (kd) control_kd[1] = kd->valuedouble;
+            if (pos) motor_params[1].position = pos->valuedouble;
+            if (speed) motor_params[1].speed = speed->valuedouble;
+            if (torque) motor_params[1].torque = torque->valuedouble;
+            if (kp) motor_params[1].kp = kp->valuedouble;
+            if (kd) motor_params[1].kd = kd->valuedouble;
         }
+
+        // 立即发送参数给电机
+        extern void unified_motor_control(int motor_id, const motor_control_params_t* params);
+        unified_motor_control(0, &motor_params[0]);
+        unified_motor_control(1, &motor_params[1]);
 
         response_msg = "运控参数已更新";
         ESP_LOGI(TAG, "网页更新运控参数");
@@ -246,14 +295,27 @@ esp_err_t motor_web_params_api_handler(httpd_req_t *req)
         cJSON *speedX = cJSON_GetObjectItem(json, "speedX");
         cJSON *speedY = cJSON_GetObjectItem(json, "speedY");
         cJSON *currentLimit = cJSON_GetObjectItem(json, "currentLimit");
+        cJSON *feedforwardTorque = cJSON_GetObjectItem(json, "feedforwardTorque");
 
         if (interval) alternating_interval_ms = interval->valueint;
         if (speedX) alternating_speed_x = speedX->valuedouble;
         if (speedY) alternating_speed_y = speedY->valuedouble;
         if (currentLimit) speed_current_limit = currentLimit->valuedouble;
+        if (feedforwardTorque) feedforward_torque_value = feedforwardTorque->valuedouble;
 
         response_msg = "交替行走参数已更新";
-        ESP_LOGI(TAG, "网页更新交替行走参数");
+        ESP_LOGI(TAG, "网页更新交替行走参数，前馈力矩: %.2f", feedforward_torque_value);
+    }
+    else if (strcmp(action->valuestring, "update_motion_detection") == 0) {
+        // 更新智能运动检测参数
+        cJSON *climbingTorque = cJSON_GetObjectItem(json, "climbingTorque");
+
+        if (climbingTorque) {
+            climbing_mode_torque = climbingTorque->valuedouble;
+        }
+
+        response_msg = "智能运动检测参数已更新";
+        ESP_LOGI(TAG, "网页更新智能运动检测参数，爬楼力矩: %.2f", climbing_mode_torque);
     }
 
     httpd_resp_send(req, response_msg, strlen(response_msg));

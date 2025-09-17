@@ -73,6 +73,9 @@ bool Get_Position_Variation_Info(float* motor1_diff, float* motor2_diff);
 // 位置数据添加函数（供外部调用）
 void Add_Position_Sample(float positions[2]);
 
+// 外部函数声明 - 来自main.c的统一电机控制函数
+extern void set_motor_params(int motor_id, float torque, float position, float speed, float kp, float kd);
+
 // 交替速度控制任务函数
 void Alternating_Speed_Control_Task(void* pvParameters);
 

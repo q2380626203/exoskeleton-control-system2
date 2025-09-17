@@ -51,7 +51,7 @@ float speed_current_limit = 0.0f;   // 速度模式下的电流限制 (平地模
 #define STAIRS_CURRENT_LIMIT 2.0f
 
 // 前馈力矩参数
-#define FEEDFORWARD_TORQUE_VALUE 0.0f  // 前馈力矩大小 (Nm)
+float feedforward_torque_value = 0.0f;  // 前馈力矩大小 (Nm)
 
 // 当前模式
 static walking_mode_t current_walking_mode = MODE_IDLE;
@@ -90,26 +90,22 @@ static TickType_t last_mode_switch_time = 0;
 #define MODE_SWITCH_COOLDOWN_MS 2000  // 2秒冷却时间
 
 // 外部变量声明
-extern float control_position[2];     // 位置设定 (rad)
-extern float control_speed[2];        // 速度设定 (rad/s)
-extern float control_torque[2];       // 力矩设定 (Nm)
-extern float control_kp[2];           // Kp参数
-extern float control_kd[2];           // Kd参数
+// 统一的电机控制参数结构体
+typedef struct {
+    float torque;      // 力矩设定 (Nm)
+    float position;    // 位置设定 (rad)
+    float speed;       // 速度设定 (rad/s)
+    float kp;          // Kp参数
+    float kd;          // Kd参数
+} motor_control_params_t;
+
+extern motor_control_params_t motor_params[2];
 extern MI_Motor motors[2];            // 电机数组
 
-// 参数变化检测相关
-static float last_sent_torque[2] = {0.0f, 0.0f};
-static float last_sent_position[2] = {0.0f, 0.0f};
-static float last_sent_speed[2] = {0.0f, 0.0f};
-static float last_sent_kp[2] = {0.0f, 0.0f};
-static float last_sent_kd[2] = {0.0f, 0.0f};
+// 外部函数声明
+extern void unified_motor_control(int motor_id, const motor_control_params_t* params);
 
-// 参数变化检测阈值
-#define PARAM_CHANGE_THRESHOLD 0.001f
 
-// 前向声明
-bool Motor_Params_Changed(int motor_id, float torque, float position, float speed, float kp, float kd);
-void Update_Sent_Params(int motor_id, float torque, float position, float speed, float kp, float kd);
 
 // 内部变量
 static TaskHandle_t alternating_speed_task_handle = NULL;
@@ -356,44 +352,6 @@ void Stop_Position_Monitor_Task(void) {
     }
 }
 
-/**
- * @brief 检查电机参数是否发生变化
- * @param motor_id 电机ID (0或1)
- * @param torque 力矩参数
- * @param position 位置参数
- * @param speed 速度参数
- * @param kp Kp参数
- * @param kd Kd参数
- * @return true 参数发生变化，false 参数未变化
- */
-bool Motor_Params_Changed(int motor_id, float torque, float position, float speed, float kp, float kd) {
-    if (motor_id < 0 || motor_id >= 2) return false;
-
-    return (fabsf(torque - last_sent_torque[motor_id]) > PARAM_CHANGE_THRESHOLD) ||
-           (fabsf(position - last_sent_position[motor_id]) > PARAM_CHANGE_THRESHOLD) ||
-           (fabsf(speed - last_sent_speed[motor_id]) > PARAM_CHANGE_THRESHOLD) ||
-           (fabsf(kp - last_sent_kp[motor_id]) > PARAM_CHANGE_THRESHOLD) ||
-           (fabsf(kd - last_sent_kd[motor_id]) > PARAM_CHANGE_THRESHOLD);
-}
-
-/**
- * @brief 更新已发送参数缓存
- * @param motor_id 电机ID (0或1)
- * @param torque 力矩参数
- * @param position 位置参数
- * @param speed 速度参数
- * @param kp Kp参数
- * @param kd Kd参数
- */
-void Update_Sent_Params(int motor_id, float torque, float position, float speed, float kp, float kd) {
-    if (motor_id < 0 || motor_id >= 2) return;
-
-    last_sent_torque[motor_id] = torque;
-    last_sent_position[motor_id] = position;
-    last_sent_speed[motor_id] = speed;
-    last_sent_kp[motor_id] = kp;
-    last_sent_kd[motor_id] = kd;
-}
 
 /**
  * @brief 启动交替速度模式
@@ -652,9 +610,6 @@ void Alternating_Speed_Control_Task(void* pvParameters) {
     const TickType_t task_period = pdMS_TO_TICKS(20);
     last_switch_time = last_wake_time;
 
-    // 初始化参数变化标志
-    bool params_changed[2] = {true, true}; // 首次启动时强制发送
-    bool alternating_state_changed = false;
 
     while (alternating_speed_enabled) {
         TickType_t current_time = xTaskGetTickCount();
@@ -664,7 +619,6 @@ void Alternating_Speed_Control_Task(void* pvParameters) {
             (current_time - last_switch_time) >= pdMS_TO_TICKS(alternating_interval_ms)) {
             speed_state = 1 - speed_state; // 0变1，1变0
             last_switch_time = current_time;
-            alternating_state_changed = true;
             ESP_LOGI(TAG, "速度切换到状态: %d", speed_state);
         }
 
@@ -699,54 +653,41 @@ void Alternating_Speed_Control_Task(void* pvParameters) {
             // 只在行走和爬楼模式下提供前馈力矩
             for (int i = 0; i < 2; i++) {
                 if (speed_state == 0) {
-                    // 周期1：电机1提供-1Nm，电机2提供-1Nm
-                    feedforward_torque[i] = -FEEDFORWARD_TORQUE_VALUE;
+                    // 周期1：电机1提供负前馈力矩，电机2提供负前馈力矩
+                    feedforward_torque[i] = -feedforward_torque_value;
                 } else {
-                    // 周期2：电机1提供1Nm，电机2提供1Nm
-                    feedforward_torque[i] = FEEDFORWARD_TORQUE_VALUE;
+                    // 周期2：电机1提供正前馈力矩，电机2提供正前馈力矩
+                    feedforward_torque[i] = feedforward_torque_value;
                 }
             }
         }
         // 过渡和静止模式下前馈力矩保持为0，但Kd值仍为对应模式的current_limit
 
-        // 检查每个电机的参数是否发生变化（包括前馈力矩和动态Kd）
+        // 直接更新统一参数结构体，让unified_motor_control来处理变化检测
         for (int i = 0; i < 2; i++) {
-            float total_torque = control_torque[i] + feedforward_torque[i];
-            params_changed[i] = Motor_Params_Changed(i, total_torque, control_position[i],
-                                                   target_speeds[i], control_kp[i], dynamic_kd[i]) ||
-                              alternating_state_changed;
-        }
+            // 交替速度模式：力矩只使用前馈力矩（基础力矩为0）
+            float base_torque = 0.0f;  // 交替速度模式基础力矩为0
+            float total_torque = base_torque + feedforward_torque[i];
 
-        // 临界区保护，避免WiFi中断影响电机控制时序
-        portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+            // 更新统一结构体参数
+            motor_params[i].torque = total_torque;
+            motor_params[i].position = 0.0f; // 交替速度模式位置为0
+            motor_params[i].speed = target_speeds[i];
+            motor_params[i].kp = 0.0f; // 交替速度模式kp为0
+            motor_params[i].kd = dynamic_kd[i];
 
-        // 只有在参数发生变化时才发送控制指令
-        for (int i = 0; i < 2; i++) {
-            if (params_changed[i]) {
-                float total_torque = control_torque[i] + feedforward_torque[i];
+            // 通过统一控制函数执行（内部会自动检查参数变化）
+            unified_motor_control(i, &motor_params[i]);
 
-                portENTER_CRITICAL(&mux);
+            ESP_LOGI(TAG, "电机%d参数更新: 总力矩=%.2f(控制力矩+前馈=%.2f), 位置=%.2f, 速度=%.2f, Kp=%.2f, Kd=%.2f",
+                     i+1, total_torque, feedforward_torque[i], 0.0f, target_speeds[i], 0.0f, dynamic_kd[i]);
 
-                // 发送电机控制指令（使用总力矩 = 控制力矩 + 前馈力矩，动态Kd值）
-                Motor_ControlMode(&motors[i], total_torque, control_position[i], target_speeds[i], control_kp[i], dynamic_kd[i]);
-
-                portEXIT_CRITICAL(&mux);
-
-                // 更新已发送参数缓存
-                Update_Sent_Params(i, total_torque, control_position[i], target_speeds[i], control_kp[i], dynamic_kd[i]);
-
-                ESP_LOGI(TAG, "电机%d参数更新: 总力矩=%.2f(控制=%.2f+前馈=%.2f), 位置=%.2f, 速度=%.2f, Kp=%.2f, Kd=%.2f",
-                         i+1, total_torque, control_torque[i], feedforward_torque[i], control_position[i], target_speeds[i], control_kp[i], dynamic_kd[i]);
-
-                // 发送间隔
-                if (i == 0) {
-                    vTaskDelay(pdMS_TO_TICKS(10));
-                }
+            // 发送间隔
+            if (i == 0) {
+                vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
 
-        // 重置状态变化标志
-        alternating_state_changed = false;
 
         // 等待剩余的时间完成20ms周期
         vTaskDelayUntil(&last_wake_time, task_period);
@@ -757,111 +698,3 @@ void Alternating_Speed_Control_Task(void* pvParameters) {
     vTaskDelete(NULL);
 }
 
-// 普通电机控制相关变量和任务
-extern float motor_target_speed[2];
-extern bool motor_speed_control_enabled;
-static TaskHandle_t speed_control_task_handle = NULL;
-
-/**
- * @brief 电机速度控制任务（普通模式 - 条件发送版本）
- * @param pvParameters 任务参数（未使用）
- */
-void Motor_Speed_Control_Task(void* pvParameters) {
-    ESP_LOGI(TAG, "电机速度控制任务启动（条件发送模式）");
-
-    TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t task_period = pdMS_TO_TICKS(20);
-
-    // 初始化参数变化标志
-    bool params_changed[2] = {true, true}; // 首次启动时强制发送
-
-    while (motor_speed_control_enabled) {
-        // 只在非交替速度模式下运行
-        if (!alternating_speed_enabled) {
-            // 计算目标速度
-            float target_speeds[2];
-
-            for (int i = 0; i < 2; i++) {
-                // 普通模式：使用设定的目标速度
-                target_speeds[i] = motor_target_speed[i];
-
-                // 限制速度范围到安全值 (-44 ~ 44 rad/s)
-                if (target_speeds[i] > 44.0f) target_speeds[i] = 44.0f;
-                else if (target_speeds[i] < -44.0f) target_speeds[i] = -44.0f;
-
-                // 检查参数是否发生变化
-                params_changed[i] = Motor_Params_Changed(i, control_torque[i], control_position[i],
-                                                       target_speeds[i], control_kp[i], control_kd[i]);
-            }
-
-            // 临界区保护，避免WiFi中断影响电机控制时序
-            portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
-
-            // 只有在参数发生变化时才发送控制指令
-            for (int i = 0; i < 2; i++) {
-                if (params_changed[i]) {
-                    portENTER_CRITICAL(&mux);
-
-                    // 发送电机控制指令
-                    Motor_ControlMode(&motors[i], control_torque[i], control_position[i], target_speeds[i], control_kp[i], control_kd[i]);
-
-                    portEXIT_CRITICAL(&mux);
-
-                    // 更新已发送参数缓存
-                    Update_Sent_Params(i, control_torque[i], control_position[i], target_speeds[i], control_kp[i], control_kd[i]);
-
-                    ESP_LOGI(TAG, "电机%d参数更新: 力矩=%.2f, 位置=%.2f, 速度=%.2f, Kp=%.2f, Kd=%.2f",
-                             i+1, control_torque[i], control_position[i], target_speeds[i], control_kp[i], control_kd[i]);
-
-                    // 发送间隔
-                    if (i == 0) {
-                        vTaskDelay(pdMS_TO_TICKS(10));
-                    }
-                }
-            }
-        }
-
-        // 等待剩余的时间完成20ms周期
-        vTaskDelayUntil(&last_wake_time, task_period);
-    }
-
-    ESP_LOGI(TAG, "电机速度控制任务退出");
-    speed_control_task_handle = NULL;
-    vTaskDelete(NULL);
-}
-
-/**
- * @brief 启动电机速度控制任务
- */
-void Start_Motor_Speed_Control(void) {
-    if (speed_control_task_handle == NULL) {
-        motor_speed_control_enabled = true;
-
-        BaseType_t result = xTaskCreate(
-            Motor_Speed_Control_Task,
-            "MotorSpeedCtrl",
-            4096,
-            NULL,
-            7,  // 提高电机控制优先级，确保实时性
-            &speed_control_task_handle
-        );
-
-        if (result == pdPASS) {
-            ESP_LOGI(TAG, "电机速度控制任务创建成功");
-        } else {
-            ESP_LOGE(TAG, "电机速度控制任务创建失败");
-            motor_speed_control_enabled = false;
-        }
-    }
-}
-
-/**
- * @brief 停止电机速度控制任务
- */
-void Stop_Motor_Speed_Control(void) {
-    if (speed_control_task_handle != NULL) {
-        motor_speed_control_enabled = false;
-        ESP_LOGI(TAG, "请求停止电机速度控制任务");
-        // 任务会自然退出并清理自己
-    }
-}
