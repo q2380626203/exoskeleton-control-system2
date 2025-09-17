@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 #include "esp_wifi.h"
+#include "alternating_speed.h"
 
 // 引入main.c中的全局变量和函数
 extern float motor_target_speed[2];
@@ -22,18 +23,14 @@ extern float control_speed[2];
 extern float control_torque[2];
 extern float control_kp[2];
 extern float control_kd[2];
+
+
+// alternating_speed模块中的外部变量
 extern bool alternating_speed_enabled;
+extern int alternating_interval_ms;
 extern float alternating_speed_x;
 extern float alternating_speed_y;
-extern int alternating_interval_ms;
 extern float speed_current_limit;
-
-extern void Start_Motor_Speed_Control(void);
-extern void Start_Alternating_Speed(void);
-extern void Stop_Alternating_Speed(void);
-extern void Switch_To_Flat_Mode(void);
-extern void Switch_To_Stairs_Mode(void);
-extern int Get_Current_Walking_Mode(void);
 
 // RS01电机库的外部变量和函数
 #include "rs01_motor.h"
