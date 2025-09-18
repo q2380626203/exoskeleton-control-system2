@@ -43,6 +43,12 @@ extern void disable_velocity_tracking_mode(void);
 extern bool is_velocity_tracking_mode_active(void);
 extern void reset_velocity_tracking_mode(void);
 
+// velocity_tracking_mode模块的可调参数
+extern float velocity_tracking_lift_leg_torque;    // 抬腿力矩
+extern float velocity_tracking_lift_leg_speed;     // 抬腿速度
+extern float velocity_tracking_drop_leg_torque;    // 放腿力矩
+extern float velocity_tracking_drop_leg_speed;     // 放腿速度
+
 // RS01电机库的外部变量和函数
 #include "rs01_motor.h"
 extern MI_Motor motors[2];
@@ -88,6 +94,12 @@ esp_err_t motor_web_status_api_handler(httpd_req_t *req)
     // 添加可配置参数状态
     cJSON_AddNumberToObject(json, "feedforward_torque", feedforward_torque_value);
     cJSON_AddNumberToObject(json, "climbing_torque", climbing_mode_torque);
+
+    // 添加velocity_tracking模式参数
+    cJSON_AddNumberToObject(json, "vt_lift_torque", velocity_tracking_lift_leg_torque);
+    cJSON_AddNumberToObject(json, "vt_lift_speed", velocity_tracking_lift_leg_speed);
+    cJSON_AddNumberToObject(json, "vt_drop_torque", velocity_tracking_drop_leg_torque);
+    cJSON_AddNumberToObject(json, "vt_drop_speed", velocity_tracking_drop_leg_speed);
 
     // 添加速度跟踪模式状态
     cJSON_AddBoolToObject(json, "velocity_tracking_enabled", velocity_tracking_mode_enabled);
@@ -363,6 +375,31 @@ esp_err_t motor_web_params_api_handler(httpd_req_t *req)
 
         response_msg = "智能运动检测参数已更新";
         ESP_LOGI(TAG, "网页更新智能运动检测参数，爬楼力矩: %.2f", climbing_mode_torque);
+    }
+    else if (strcmp(action->valuestring, "update_velocity_tracking") == 0) {
+        // 更新velocity_tracking模式参数
+        cJSON *liftTorque = cJSON_GetObjectItem(json, "liftTorque");
+        cJSON *liftSpeed = cJSON_GetObjectItem(json, "liftSpeed");
+        cJSON *dropTorque = cJSON_GetObjectItem(json, "dropTorque");
+        cJSON *dropSpeed = cJSON_GetObjectItem(json, "dropSpeed");
+
+        if (liftTorque) {
+            velocity_tracking_lift_leg_torque = liftTorque->valuedouble;
+        }
+        if (liftSpeed) {
+            velocity_tracking_lift_leg_speed = liftSpeed->valuedouble;
+        }
+        if (dropTorque) {
+            velocity_tracking_drop_leg_torque = dropTorque->valuedouble;
+        }
+        if (dropSpeed) {
+            velocity_tracking_drop_leg_speed = dropSpeed->valuedouble;
+        }
+
+        response_msg = "Velocity Tracking参数已更新";
+        ESP_LOGI(TAG, "网页更新Velocity Tracking参数: 抬腿力矩=%.1f, 抬腿速度=%.2f, 放腿力矩=%.1f, 放腿速度=%.2f",
+                 velocity_tracking_lift_leg_torque, velocity_tracking_lift_leg_speed,
+                 velocity_tracking_drop_leg_torque, velocity_tracking_drop_leg_speed);
     }
 
     httpd_resp_send(req, response_msg, strlen(response_msg));

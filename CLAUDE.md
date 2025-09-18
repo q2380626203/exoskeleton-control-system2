@@ -44,6 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 4. **运动控制模块**
    - `alternating_speed.c/.h` - 速度交替模式和行走模式切换
    - `continuous_torque_velocity_mode.c/.h` - 智能运动检测和参数化控制
+   - `velocity_tracking_mode.c/.h` - 速度跟踪模式和交替工作机制
    - 环形缓存区位置监测和运动模式自动切换
 
 5. **外设模块**
@@ -58,6 +59,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **参数化电机控制**：统一的5参数控制接口(力矩/位置/速度/Kp/Kd)
 - **条件发送机制**：只在参数变化时发送控制指令
 - **WiFi网页控制**：通过浏览器实时控制和监控电机状态
+- **速度跟踪模式**：基于速度方向变化的交替工作机制，支持抬腿MIT超时保护
 
 ### RS01电机通信
 
@@ -78,6 +80,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `Motion_Detection_Task` - 运动模式检测和力矩渐变控制
 - `motor_data_transmit_task` - 定期发送电机数据
 - `Alternating_Speed_Control_Task` - 速度交替控制（可选）
+- `velocity_tracking_task` - 速度跟踪模式任务（可选）
+
+## 关键设计模式
+
+### 运动模式互斥机制
+- alternating_speed模式与motion_detection模式互斥
+- velocity_tracking模式独立运行，可与其他模式并存
+- 网页界面提供冲突检测和状态显示
+
+### 电机控制统一接口
+- 所有模块通过 `unified_motor_control()` 函数控制电机
+- 参数变化检测避免重复发送相同指令
+- 支持实时参数调整（网页接口）
+
+### 速度跟踪模式架构
+- **交替工作机制**：1号工作2号休息 ↔ 2号工作1号休息
+- **超时保护**：抬腿MIT超时1200ms后强制切换到600ms放腿MIT
+- **自适应时间**：放腿MIT持续时间=检测间隔+200ms
+- **网页可调参数**：抬腿/放腿的力矩和速度参数
 
 ## 开发注意事项
 
@@ -85,6 +106,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 通过 `unified_motor_control()` 函数发送控制指令
 - 位置监测使用环形缓存区 (`position_ring_buffer_t`)
 - 运动模式状态通过 `motion_mode_state_t` 管理
+- velocity_tracking模式参数可通过全局变量实时调整
 - WiFi热点默认SSID可在 `wifi_softap_module.c` 中配置
 - 所有日志使用ESP_LOG系列宏，TAG统一命名
 

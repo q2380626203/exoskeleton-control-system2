@@ -48,6 +48,8 @@ extern "C" {
 #define VELOCITY_TRACKING_ENABLE_THRESHOLD 0.75f    // 启用波峰波谷差值阈值
 #define VELOCITY_TRACKING_MIN_VELOCITY 0.35f        // 最小有效速度阈值
 #define VELOCITY_TRACKING_UPDATE_INTERVAL_MS 50     // 速度跟踪更新间隔(50ms)
+#define LIFT_LEG_MAX_DURATION_MS 1000              // 抬腿MIT最大持续时间(1200ms)
+#define TIMEOUT_DROP_LEG_DURATION_MS 600           // 抬腿超时后的放腿持续时间(600ms)
 
 // 电机动作参数 - 抬腿
 #define LIFT_LEG_TORQUE 6.0f        // 抬腿力矩 (Nm)
@@ -134,6 +136,12 @@ typedef struct {
 // 全局变量声明
 extern velocity_tracking_context_t velocity_tracking_context;
 extern bool velocity_tracking_mode_enabled;
+
+// 可调参数全局变量（用于网页调整）
+extern float velocity_tracking_lift_leg_torque;    // 抬腿力矩
+extern float velocity_tracking_lift_leg_speed;     // 抬腿速度
+extern float velocity_tracking_drop_leg_torque;    // 放腿力矩
+extern float velocity_tracking_drop_leg_speed;     // 放腿速度
 
 // 函数声明
 

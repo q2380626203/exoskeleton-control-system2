@@ -18,6 +18,12 @@ static const char *TAG = "velocity_tracking";
 velocity_tracking_context_t velocity_tracking_context;
 bool velocity_tracking_mode_enabled = false;
 
+// 可调参数全局变量（用于网页调整）
+float velocity_tracking_lift_leg_torque = LIFT_LEG_TORQUE;    // 抬腿力矩
+float velocity_tracking_lift_leg_speed = LIFT_LEG_SPEED;      // 抬腿速度
+float velocity_tracking_drop_leg_torque = DROP_LEG_TORQUE;    // 放腿力矩
+float velocity_tracking_drop_leg_speed = DROP_LEG_SPEED;      // 放腿速度
+
 // 任务句柄
 static TaskHandle_t velocity_tracking_task_handle = NULL;
 
@@ -251,10 +257,10 @@ void velocity_tracking_execute_motor_action(int motor_id, motor_action_t action)
 
     switch (action) {
         case MOTOR_ACTION_LIFT_LEG:
-            // 抬腿参数
-            params.torque = LIFT_LEG_TORQUE;
+            // 抬腿参数（使用可调参数）
+            params.torque = velocity_tracking_lift_leg_torque;
             params.position = LIFT_LEG_POSITION;
-            params.speed = LIFT_LEG_SPEED;
+            params.speed = velocity_tracking_lift_leg_speed;
             params.kp = LIFT_LEG_KP;
             params.kd = LIFT_LEG_KD;
 
@@ -273,10 +279,10 @@ void velocity_tracking_execute_motor_action(int motor_id, motor_action_t action)
             break;
 
         case MOTOR_ACTION_DROP_LEG:
-            // 放腿参数
-            params.torque = DROP_LEG_TORQUE;
+            // 放腿参数（使用可调参数）
+            params.torque = velocity_tracking_drop_leg_torque;
             params.position = DROP_LEG_POSITION;
-            params.speed = DROP_LEG_SPEED;
+            params.speed = velocity_tracking_drop_leg_speed;
             params.kp = DROP_LEG_KP;
             params.kd = DROP_LEG_KD;
 
@@ -333,36 +339,73 @@ bool velocity_tracking_process_rhythm_timing(rhythm_control_t *rhythm, int motor
         return false;
     }
 
-    // 检查动作是否应该结束
     uint32_t elapsed_time = timestamp - rhythm->action_start_time;
+    bool action_completed = false;
+    bool force_switch = false;
+
+    // 检查抬腿MIT超时（0.65秒限制）
+    if (rhythm->current_action == MOTOR_ACTION_LIFT_LEG && elapsed_time >= LIFT_LEG_MAX_DURATION_MS) {
+        // 抬腿超时，强制切换到放腿
+        force_switch = true;
+        ESP_LOGW(TAG, "电机%d抬腿MIT超时(%lu ms >= %d ms)，强制切换到放腿MIT",
+                 motor_id+1, elapsed_time, LIFT_LEG_MAX_DURATION_MS);
+    }
+
+    // 检查正常动作时间是否到达
     if (elapsed_time >= rhythm->control_duration_ms) {
-        // 动作时间到，停止动作
-        rhythm->action_active = false;
-        rhythm->current_action = MOTOR_ACTION_IDLE;
+        action_completed = true;
+    }
 
-        ESP_LOGI(TAG, "电机%d动作完成，耗时: %lu ms，切换到空闲状态", motor_id+1, elapsed_time);
+    // 如果抬腿超时或正常完成，处理动作结束
+    if (force_switch || action_completed) {
+        if (force_switch && rhythm->current_action == MOTOR_ACTION_LIFT_LEG) {
+            // 抬腿超时，强制切换到放腿MIT
+            rhythm->current_action = MOTOR_ACTION_DROP_LEG;
+            rhythm->action_start_time = timestamp; // 重新计时
 
-        // 设置电机为空闲状态
-        velocity_tracking_execute_motor_action(motor_id, MOTOR_ACTION_IDLE);
+            // 抬腿超时后使用较短的放腿时间（600ms）
+            uint32_t drop_duration = TIMEOUT_DROP_LEG_DURATION_MS;
+            rhythm->control_duration_ms = drop_duration;
 
-        // 如果完成的是放腿动作，立即进行交替切换
-        if (rhythm->last_dir == VELOCITY_DIR_POSITIVE && motor_id == 0) {
-            // 1号电机完成放腿，切换到休息，2号电机开始工作
-            velocity_tracking_context.motor1_rhythm.is_resting = true;
-            velocity_tracking_context.motor2_rhythm.is_resting = false;
-            velocity_tracking_context.total_work_cycles++;
-            ESP_LOGI(TAG, "1号电机完成放腿，进入休息状态，2号电机开始工作周期 (总周期数: %lu)",
-                     velocity_tracking_context.total_work_cycles);
-        } else if (rhythm->last_dir == VELOCITY_DIR_NEGATIVE && motor_id == 1) {
-            // 2号电机完成放腿，切换到休息，1号电机开始工作
-            velocity_tracking_context.motor2_rhythm.is_resting = true;
-            velocity_tracking_context.motor1_rhythm.is_resting = false;
-            velocity_tracking_context.total_work_cycles++;
-            ESP_LOGI(TAG, "2号电机完成放腿，进入休息状态，1号电机开始工作周期 (总周期数: %lu)",
-                     velocity_tracking_context.total_work_cycles);
+            // 更新速度方向为正向（放腿阶段）
+            rhythm->current_dir = VELOCITY_DIR_POSITIVE;
+            rhythm->last_dir = VELOCITY_DIR_POSITIVE;
+
+            // 执行放腿动作
+            velocity_tracking_execute_motor_action(motor_id, MOTOR_ACTION_DROP_LEG);
+
+            ESP_LOGI(TAG, "电机%d强制执行放腿MIT，持续时间: %lu ms（超时后固定时间）", motor_id+1, drop_duration);
+
+            return true; // 状态发生了变化
+        } else {
+            // 正常完成动作
+            rhythm->action_active = false;
+            rhythm->current_action = MOTOR_ACTION_IDLE;
+
+            ESP_LOGI(TAG, "电机%d动作完成，耗时: %lu ms，切换到空闲状态", motor_id+1, elapsed_time);
+
+            // 设置电机为空闲状态
+            velocity_tracking_execute_motor_action(motor_id, MOTOR_ACTION_IDLE);
+
+            // 如果完成的是放腿动作，立即进行交替切换
+            if (rhythm->last_dir == VELOCITY_DIR_POSITIVE && motor_id == 0) {
+                // 1号电机完成放腿，切换到休息，2号电机开始工作
+                velocity_tracking_context.motor1_rhythm.is_resting = true;
+                velocity_tracking_context.motor2_rhythm.is_resting = false;
+                velocity_tracking_context.total_work_cycles++;
+                ESP_LOGI(TAG, "1号电机完成放腿，进入休息状态，2号电机开始工作周期 (总周期数: %lu)",
+                         velocity_tracking_context.total_work_cycles);
+            } else if (rhythm->last_dir == VELOCITY_DIR_NEGATIVE && motor_id == 1) {
+                // 2号电机完成放腿，切换到休息，1号电机开始工作
+                velocity_tracking_context.motor2_rhythm.is_resting = true;
+                velocity_tracking_context.motor1_rhythm.is_resting = false;
+                velocity_tracking_context.total_work_cycles++;
+                ESP_LOGI(TAG, "2号电机完成放腿，进入休息状态，1号电机开始工作周期 (总周期数: %lu)",
+                         velocity_tracking_context.total_work_cycles);
+            }
+
+            return true; // 状态发生了变化
         }
-
-        return true; // 状态发生了变化
     }
 
     return false; // 无变化
