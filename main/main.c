@@ -17,6 +17,7 @@
 #include "motor_web_control.h"
 #include "alternating_speed.h"
 #include "continuous_torque_velocity_mode.h"
+#include "velocity_tracking_mode.h"
 
 // 外部变量声明
 extern MotorDataCallback data_callback;
@@ -33,7 +34,9 @@ static const char *TAG = "exoskeleton_main";
 float motor_target_speed[2] = {0.0f, 0.0f};  // 目标速度值数组，索引对应电机ID-1 (rad/s)
 bool motor_speed_control_enabled = false;
 
-// 统一的电机控制参数结构体
+// 统一的电机控制参数结构体 - 避免重复定义
+#ifndef MOTOR_CONTROL_PARAMS_T_DEFINED
+#define MOTOR_CONTROL_PARAMS_T_DEFINED
 typedef struct {
     float torque;      // 力矩设定 (Nm)
     float position;    // 位置设定 (rad)
@@ -41,6 +44,7 @@ typedef struct {
     float kp;          // Kp参数
     float kd;          // Kd参数
 } motor_control_params_t;
+#endif // MOTOR_CONTROL_PARAMS_T_DEFINED
 
 // 全局电机控制参数（数组索引对应电机ID-1）
 motor_control_params_t motor_params[2] = {{0}};
@@ -71,12 +75,21 @@ motion_mode_state_t motion_state;
 // 运动模式检测功能开关
 bool motion_mode_detection_enabled = false;
 
+// 速度跟踪模式功能开关
+bool velocity_tracking_mode_active = false;
+
 // 导出统一的电机参数结构体供其他模块使用
 extern motor_control_params_t motor_params[2];
 
 // 函数声明
 void set_motor_params(int motor_id, float torque, float position, float speed, float kp, float kd);
 void unified_motor_control(int motor_id, const motor_control_params_t* params);
+
+// 速度跟踪模式控制函数
+void enable_velocity_tracking_mode(void);
+void disable_velocity_tracking_mode(void);
+bool is_velocity_tracking_mode_active(void);
+void reset_velocity_tracking_mode(void);
 
 
 
@@ -221,6 +234,16 @@ void Motion_Detection_Task(void* pvParameters) {
 
                 last_torque_update = current_time;
             }
+        }
+
+        // 速度跟踪模式更新
+        if (velocity_tracking_mode_active && velocity_tracking_mode_is_enabled()) {
+            // 获取当前电机速度
+            float motor1_velocity = motors[0].velocity;
+            float motor2_velocity = motors[1].velocity;
+
+            // 更新速度跟踪模式
+            velocity_tracking_mode_update(&position_recorder, motor1_velocity, motor2_velocity, timestamp);
         }
 
         // 任务延时
@@ -459,6 +482,11 @@ void app_main(void)
     ESP_LOGI(TAG, "启动运动模式检测任务...");
     Start_Motion_Detection_Task();
 
+    // 初始化速度跟踪模式
+    ESP_LOGI(TAG, "初始化速度跟踪模式...");
+    velocity_tracking_mode_init();
+    velocity_tracking_start_task();
+
     // 初始化电机控制网页模块
     ESP_LOGI(TAG, "初始化电机控制网页...");
     esp_err_t web_result = motor_web_control_init();
@@ -475,6 +503,43 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(10000)); // 10秒输出一次状态
         ESP_LOGI(TAG, "系统运行正常，WiFi连接数：%d", wifi_softap_get_connected_count());
     }
+}
+
+/**
+ * @brief 启用速度跟踪模式
+ */
+void enable_velocity_tracking_mode(void) {
+    velocity_tracking_mode_active = true;
+    velocity_tracking_mode_set_enabled(true);
+    ESP_LOGI(TAG, "速度跟踪模式已启用");
+}
+
+/**
+ * @brief 禁用速度跟踪模式
+ */
+void disable_velocity_tracking_mode(void) {
+    velocity_tracking_mode_active = false;
+    velocity_tracking_mode_set_enabled(false);
+    ESP_LOGI(TAG, "速度跟踪模式已禁用");
+}
+
+/**
+ * @brief 获取速度跟踪模式状态
+ * @return true启用，false禁用
+ */
+bool is_velocity_tracking_mode_active(void) {
+    return velocity_tracking_mode_active;
+}
+
+/**
+ * @brief 重置速度跟踪模式到启用状态
+ *
+ * 将速度跟踪模式重置到ENABLED状态，等待波峰波谷差值>=0.75重新激活。
+ * 这样可以让模式重新检测激活条件，而不是一直保持激活状态。
+ */
+void reset_velocity_tracking_mode(void) {
+    velocity_tracking_reset_to_enabled();
+    ESP_LOGI(TAG, "速度跟踪模式已重置，等待重新激活");
 }
 
 

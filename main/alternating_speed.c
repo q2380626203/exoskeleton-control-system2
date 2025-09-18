@@ -34,13 +34,13 @@ float speed_current_limit = 0.0f;   // 速度模式下的电流限制 (平地模
 
 // 过渡模式参数
 #define TRANSITION_INTERVAL_MS 800
-#define TRANSITION_SPEED_X 2.25f
+#define TRANSITION_SPEED_X 1.0f
 #define TRANSITION_SPEED_Y 1.0f
 #define TRANSITION_CURRENT_LIMIT 1.0f
 
 // 平地模式参数（行走模式）
 #define FLAT_INTERVAL_MS 800
-#define FLAT_SPEED_X 2.25f
+#define FLAT_SPEED_X 1.0f
 #define FLAT_SPEED_Y 1.5f
 #define FLAT_CURRENT_LIMIT 2.0f
 
@@ -51,7 +51,7 @@ float speed_current_limit = 0.0f;   // 速度模式下的电流限制 (平地模
 #define STAIRS_CURRENT_LIMIT 2.0f
 
 // 前馈力矩参数
-float feedforward_torque_value = 0.0f;  // 前馈力矩大小 (Nm)
+float feedforward_torque_value = 1.5f;  // 前馈力矩大小 (Nm)
 
 // 当前模式
 static walking_mode_t current_walking_mode = MODE_IDLE;
@@ -79,7 +79,7 @@ static bool buffer_full = false;
 #define THRESHOLD_START_WALKING 1.0f     // 从过渡到行走，原来从静止到行走
 #define THRESHOLD_STAIRS_UP 1.25f        // 从行走到爬楼
 #define THRESHOLD_STAIRS_DOWN 1.3f       // 从爬楼到行走
-#define THRESHOLD_WALKING_DOWN 0.7f      // 从行走降到过渡模式
+#define THRESHOLD_WALKING_DOWN 0.9f      // 从行走降到过渡模式
 #define THRESHOLD_TRANSITION_DOWN 0.40f  // 从过渡降到静止模式
 
 // 当前状态

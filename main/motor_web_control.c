@@ -14,25 +14,16 @@
 #include "cJSON.h"
 #include "esp_wifi.h"
 #include "alternating_speed.h"
+#include "velocity_tracking_mode.h"
 
 // 引入main.c中的全局变量和函数
 extern float motor_target_speed[2];
 extern bool motor_speed_control_enabled;
 
-// 统一的电机控制参数结构体
-typedef struct {
-    float torque;      // 力矩设定 (Nm)
-    float position;    // 位置设定 (rad)
-    float speed;       // 速度设定 (rad/s)
-    float kp;          // Kp参数
-    float kd;          // Kd参数
-} motor_control_params_t;
-
 extern motor_control_params_t motor_params[2];
 
 // 运动模式检测功能开关
 extern bool motion_mode_detection_enabled;
-
 
 // alternating_speed模块中的外部变量
 extern bool alternating_speed_enabled;
@@ -44,6 +35,13 @@ extern float feedforward_torque_value;
 
 // continuous_torque_velocity_mode模块中的外部变量
 extern float climbing_mode_torque;
+
+// velocity_tracking_mode模块中的外部变量和函数
+extern bool velocity_tracking_mode_enabled;
+extern void enable_velocity_tracking_mode(void);
+extern void disable_velocity_tracking_mode(void);
+extern bool is_velocity_tracking_mode_active(void);
+extern void reset_velocity_tracking_mode(void);
 
 // RS01电机库的外部变量和函数
 #include "rs01_motor.h"
@@ -90,6 +88,27 @@ esp_err_t motor_web_status_api_handler(httpd_req_t *req)
     // 添加可配置参数状态
     cJSON_AddNumberToObject(json, "feedforward_torque", feedforward_torque_value);
     cJSON_AddNumberToObject(json, "climbing_torque", climbing_mode_torque);
+
+    // 添加速度跟踪模式状态
+    cJSON_AddBoolToObject(json, "velocity_tracking_enabled", velocity_tracking_mode_enabled);
+    if (velocity_tracking_mode_enabled) {
+        velocity_tracking_state_t state = velocity_tracking_mode_get_state();
+        const char* state_str = "未知";
+        switch (state) {
+            case VELOCITY_TRACKING_DISABLED:
+                state_str = "禁用";
+                break;
+            case VELOCITY_TRACKING_ENABLED:
+                state_str = "启用";
+                break;
+            case VELOCITY_TRACKING_ACTIVE:
+                state_str = "激活";
+                break;
+        }
+        cJSON_AddStringToObject(json, "velocity_tracking_state", state_str);
+    } else {
+        cJSON_AddStringToObject(json, "velocity_tracking_state", "禁用");
+    }
 
     // 添加冲突状态信息
     cJSON_AddBoolToObject(json, "alternating_conflict", motion_mode_detection_enabled);
@@ -206,6 +225,34 @@ esp_err_t motor_web_control_api_handler(httpd_req_t *req)
         motion_mode_detection_enabled = false;
         response_msg = "智能运动模式检测已关闭";
         ESP_LOGI(TAG, "网页请求关闭运动模式检测");
+    }
+    else if (strcmp(action->valuestring, "enable_velocity_tracking") == 0) {
+        if (alternating_speed_enabled) {
+            response_msg = "启动失败：交替行走模式正在运行，请先停止交替行走";
+            ESP_LOGW(TAG, "速度跟踪模式启动失败：交替行走冲突");
+        } else if (motion_mode_detection_enabled) {
+            response_msg = "启动失败：智能运动检测正在运行，请先关闭智能运动检测";
+            ESP_LOGW(TAG, "速度跟踪模式启动失败：智能运动检测冲突");
+        } else {
+            enable_velocity_tracking_mode();
+            response_msg = "速度跟踪模式已启用，等待波峰波谷差值>=0.75激活";
+            ESP_LOGI(TAG, "网页请求启用速度跟踪模式");
+        }
+    }
+    else if (strcmp(action->valuestring, "disable_velocity_tracking") == 0) {
+        disable_velocity_tracking_mode();
+        response_msg = "速度跟踪模式已关闭";
+        ESP_LOGI(TAG, "网页请求关闭速度跟踪模式");
+    }
+    else if (strcmp(action->valuestring, "reset_velocity_tracking") == 0) {
+        if (velocity_tracking_mode_enabled) {
+            reset_velocity_tracking_mode();
+            response_msg = "速度跟踪模式已重置到等待激活状态";
+            ESP_LOGI(TAG, "网页请求重置速度跟踪模式");
+        } else {
+            response_msg = "重置失败：速度跟踪模式未启用";
+            ESP_LOGW(TAG, "速度跟踪模式重置失败：模式未启用");
+        }
     }
 
     httpd_resp_send(req, response_msg, strlen(response_msg));
