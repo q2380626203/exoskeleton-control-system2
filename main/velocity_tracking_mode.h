@@ -15,8 +15,22 @@
  * 6. 持续运行：一旦激活，持续进行节律控制，不再检查波峰波谷差值
  * 7. 重置机制：可调用reset函数重置到ENABLED状态，重新等待激活条件
  *
- * 举例：1号电机检测到-v→启动抬腿MIT→记录时间点→检测到+v→计算时间间隔→
- *       启动放腿MIT，持续时间=前面计算的间隔→循环往复
+ * 交替工作机制：
+ *
+ * 阶段1 - 1号工作，2号休息：
+ *   1号电机: -v→抬腿MIT→+v→放腿MIT(间隔+200ms)→完成后进入休息
+ *   2号电机: 保持空闲休息状态
+ *
+ * 阶段2 - 2号工作，1号休息：
+ *   2号电机: +v→抬腿MIT→-v→放腿MIT(间隔+200ms)→完成后进入休息
+ *   1号电机: 保持空闲休息状态
+ *
+ * 时序：1号工作2号休息 → 2号工作1号休息 → 1号工作2号休息 → ...
+ *
+ * 关键特性：
+ * - 任何时刻只有一个电机在工作，另一个在休息
+ * - 放腿MIT完成后立即切换工作状态
+ * - 休息的电机保持全0参数，确保不干扰
  */
 
 #ifndef VELOCITY_TRACKING_MODE_H
@@ -38,14 +52,14 @@ extern "C" {
 // 电机动作参数 - 抬腿
 #define LIFT_LEG_TORQUE 6.0f        // 抬腿力矩 (Nm)
 #define LIFT_LEG_POSITION 0.0f      // 抬腿位置 (rad)
-#define LIFT_LEG_SPEED 3.0f         // 抬腿速度 (rad/s)
+#define LIFT_LEG_SPEED 2.75f         // 抬腿速度 (rad/s)
 #define LIFT_LEG_KP 0.0f            // 抬腿Kp参数
 #define LIFT_LEG_KD 1.0f            // 抬腿Kd参数
 
 // 电机动作参数 - 放腿
-#define DROP_LEG_TORQUE -1.0f       // 放腿力矩 (Nm)
+#define DROP_LEG_TORQUE -2.0f       // 放腿力矩 (Nm)
 #define DROP_LEG_POSITION 0.0f      // 放腿位置 (rad)
-#define DROP_LEG_SPEED -2.0f        // 放腿速度 (rad/s)
+#define DROP_LEG_SPEED -1.5f        // 放腿速度 (rad/s)
 #define DROP_LEG_KP 0.0f            // 放腿Kp参数
 #define DROP_LEG_KD 1.0f            // 放腿Kd参数
 
@@ -70,6 +84,12 @@ typedef enum {
     VELOCITY_DIR_NEGATIVE = 2   // 负方向 (-v)
 } velocity_direction_t;
 
+// 工作周期枚举
+typedef enum {
+    WORK_CYCLE_MOTOR1 = 1,      // 1号电机工作周期
+    WORK_CYCLE_MOTOR2 = 2       // 2号电机工作周期
+} work_cycle_t;
+
 // 节律控制状态结构体
 typedef struct {
     velocity_direction_t current_dir;       // 当前速度方向
@@ -79,6 +99,8 @@ typedef struct {
     uint32_t action_start_time;             // 动作开始时间
     bool action_active;                     // 动作是否正在执行
     motor_action_t current_action;          // 当前执行的动作
+    bool detection_blocked;                 // 检测是否被阻止（互锁机制）
+    bool is_resting;                        // 是否处于休息状态
 
     // 节律统计
     uint32_t total_cycles;                  // 总循环次数
@@ -93,6 +115,11 @@ typedef struct {
     bool enabled;                               // 是否启用
     uint32_t last_update_time;                  // 上次更新时间戳
 
+    // 轮流工作周期管理
+    work_cycle_t current_work_cycle;            // 当前工作周期（1号或2号）
+    bool cycle_completed;                       // 当前周期是否完成
+    uint32_t cycle_start_time;                  // 当前周期开始时间
+
     // 节律控制状态
     rhythm_control_t motor1_rhythm;             // 电机1节律控制
     rhythm_control_t motor2_rhythm;             // 电机2节律控制
@@ -101,6 +128,7 @@ typedef struct {
     uint32_t activation_count;                  // 激活次数
     uint32_t total_lift_actions;                // 总抬腿次数
     uint32_t total_drop_actions;                // 总放腿次数
+    uint32_t total_work_cycles;                 // 总工作周期数
 } velocity_tracking_context_t;
 
 // 全局变量声明
