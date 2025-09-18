@@ -148,7 +148,7 @@ void Motion_Detection_Task(void* pvParameters) {
     TickType_t last_position_check = xTaskGetTickCount();
     TickType_t last_mode_check = xTaskGetTickCount();
     TickType_t last_torque_update = xTaskGetTickCount();
-    const TickType_t position_check_interval = pdMS_TO_TICKS(100); // 每100ms检查一次位置
+    const TickType_t position_check_interval = pdMS_TO_TICKS(20);  // 每20ms检查一次位置
     const TickType_t mode_check_interval = pdMS_TO_TICKS(1000);    // 每1秒进行一次模式检测
     const TickType_t torque_update_interval = pdMS_TO_TICKS(100);  // 每100ms更新一次力矩渐变
 
@@ -156,7 +156,10 @@ void Motion_Detection_Task(void* pvParameters) {
         TickType_t current_time = xTaskGetTickCount();
         uint32_t timestamp = current_time * portTICK_PERIOD_MS;
 
-        if (motion_mode_detection_enabled) {
+        // 检查是否需要位置记录（运动检测模式或velocity_tracking模式启用时）
+        bool need_position_recording = motion_mode_detection_enabled || velocity_tracking_mode_enabled;
+
+        if (need_position_recording) {
             // 检查位置记录（从电机1获取位置数据）
             if ((current_time - last_position_check) >= position_check_interval) {
                 // 获取电机1的当前位置并记录变化
@@ -164,6 +167,9 @@ void Motion_Detection_Task(void* pvParameters) {
                 last_position_check = current_time;
             }
 
+        }
+
+        if (motion_mode_detection_enabled) {
             // 运动模式检测和参数更新
             if ((current_time - last_mode_check) >= mode_check_interval) {
                 motion_mode_t detected_mode = detect_motion_mode(&position_recorder, timestamp, &motion_state);

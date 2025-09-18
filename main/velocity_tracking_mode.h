@@ -2,35 +2,41 @@
  * @file velocity_tracking_mode.h
  * @brief 速度跟踪模式控制头文件
  *
- * 基于位置环形缓存区的波峰波谷差值检测，实现智能速度跟踪模式：
+ * 基于位置环形缓存区的智能运动检测，实现智能速度跟踪模式：
  *
  * 节律控制工作原理：
- * 1. 启动条件：当波峰波谷差值>=0.75时，模式从ENABLED状态切换到ACTIVE状态
- * 2. 速度方向变化检测：持续监测电机速度方向变化（绝对值>0.35才有效）
- * 3. 时间间隔学习：记录相邻速度方向变化的时间间隔，用作下次动作的持续时间
+ * 1. 启动条件：基于智能运动检测的爬楼升档判断(位置变化>=0.7)，模式从ENABLED状态切换到ACTIVE状态
+ * 2. 速度方向检测：持续监测电机速度方向（绝对值>0.35才有效）
+ * 3. 实时MIT执行：
+ *    - 首次检测到速度方向时立即执行相应MIT动作（持续1.2秒）
+ *    - 后续方向变化时立即执行MIT动作（持续时间=上次间隔+200ms）
  * 4. 动作映射：
- *    - 1号电机：检测到-v时执行抬腿MIT，检测到+v时执行放腿MIT
- *    - 2号电机：检测到+v时执行抬腿MIT，检测到-v时执行放腿MIT
- * 5. 自适应控制：每次MIT动作的持续时间 = 上一次相同方向变化的时间间隔
- * 6. 持续运行：一旦激活，持续进行节律控制，不再检查波峰波谷差值
- * 7. 重置机制：可调用reset函数重置到ENABLED状态，重新等待激活条件
+ *    - 1号电机：检测到-v时立即执行抬腿MIT，检测到+v时立即执行放腿MIT
+ *    - 2号电机：检测到+v时立即执行抬腿MIT，检测到-v时立即执行放腿MIT
+ * 5. 自适应控制：MIT动作持续时间基于相邻速度变化的时间间隔自动调整
+ * 6. 持续运行：一旦激活，持续进行节律控制，不再检查运动模式
+ * 7. 超时重置：工作电机超时3秒未抬腿则自动重置到ENABLED状态，清空缓存区
  *
  * 交替工作机制：
  *
  * 阶段1 - 1号工作，2号休息：
- *   1号电机: -v→抬腿MIT→+v→放腿MIT(间隔+200ms)→完成后进入休息
+ *   1号电机: 检测到-v→立即抬腿MIT→检测到+v→立即放腿MIT→完成后进入休息
  *   2号电机: 保持空闲休息状态
  *
  * 阶段2 - 2号工作，1号休息：
- *   2号电机: +v→抬腿MIT→-v→放腿MIT(间隔+200ms)→完成后进入休息
+ *   2号电机: 检测到+v→立即抬腿MIT→检测到-v→立即放腿MIT→完成后进入休息
  *   1号电机: 保持空闲休息状态
  *
  * 时序：1号工作2号休息 → 2号工作1号休息 → 1号工作2号休息 → ...
  *
  * 关键特性：
- * - 任何时刻只有一个电机在工作，另一个在休息
- * - 放腿MIT完成后立即切换工作状态
- * - 休息的电机保持全0参数，确保不干扰
+ * - 实时响应：首次检测到速度方向时立即执行MIT，无延迟
+ * - 交替工作：任何时刻只有一个电机在工作，另一个在休息
+ * - 自动切换：放腿MIT完成后立即切换工作状态
+ * - 智能启动：基于爬楼升档判断自动激活（位置变化>=0.7弧度）
+ * - 超时保护：工作电机3秒未抬腿则自动重置，防止系统卡滞
+ * - 参数自适应：MIT持续时间根据用户运动节律自动调整
+ * - 状态隔离：休息的电机保持空闲状态，确保不干扰
  */
 
 #ifndef VELOCITY_TRACKING_MODE_H
@@ -45,11 +51,15 @@ extern "C" {
 #endif
 
 // 速度跟踪模式配置参数
-#define VELOCITY_TRACKING_ENABLE_THRESHOLD 0.75f    // 启用波峰波谷差值阈值
+#define VELOCITY_TRACKING_ENABLE_THRESHOLD 0.95f     // 启用阈值（复用爬楼升档阈值）
 #define VELOCITY_TRACKING_MIN_VELOCITY 0.35f        // 最小有效速度阈值
 #define VELOCITY_TRACKING_UPDATE_INTERVAL_MS 50     // 速度跟踪更新间隔(50ms)
 #define LIFT_LEG_MAX_DURATION_MS 1000              // 抬腿MIT最大持续时间(1200ms)
 #define TIMEOUT_DROP_LEG_DURATION_MS 600           // 抬腿超时后的放腿持续时间(600ms)
+
+// 工作周期超时管理
+#define DEFAULT_CYCLE_DURATION_MS 2000             // 默认工作周期持续时间(2秒)
+#define CYCLE_TIMEOUT_MULTIPLIER 1.0f              // 超时阈值倍数(1.5倍预期时间)
 
 // 电机动作参数 - 抬腿
 #define LIFT_LEG_TORQUE 6.0f        // 抬腿力矩 (Nm)
@@ -117,10 +127,15 @@ typedef struct {
     bool enabled;                               // 是否启用
     uint32_t last_update_time;                  // 上次更新时间戳
 
+    // 运动状态管理（复用爬楼升降档逻辑作为启动条件）
+    motion_mode_state_t motion_state;           // 运动状态管理
+
     // 轮流工作周期管理
     work_cycle_t current_work_cycle;            // 当前工作周期（1号或2号）
     bool cycle_completed;                       // 当前周期是否完成
     uint32_t cycle_start_time;                  // 当前周期开始时间
+    uint32_t expected_cycle_duration_ms;        // 预期工作周期持续时间
+    uint32_t cycle_timeout_threshold_ms;        // 周期超时阈值（2.5倍预期时间）
 
     // 节律控制状态
     rhythm_control_t motor1_rhythm;             // 电机1节律控制
@@ -186,7 +201,7 @@ bool velocity_tracking_mode_update(position_ring_buffer_t *buffer,
  * @param buffer 位置环形缓存区指针
  * @return true应该启用，false不应启用
  */
-bool velocity_tracking_should_enable(position_ring_buffer_t *buffer);
+bool velocity_tracking_should_enable(position_ring_buffer_t *buffer, uint32_t timestamp);
 
 /**
  * @brief 根据速度决定电机动作
@@ -258,6 +273,14 @@ void velocity_tracking_reset_statistics(void);
  * @brief 重置速度跟踪模式到启用状态（用于重新检测激活条件）
  */
 void velocity_tracking_reset_to_enabled(void);
+
+/**
+ * @brief 检查工作周期是否超时并处理超时重置
+ * @param buffer 位置环形缓存区指针
+ * @param timestamp 当前时间戳
+ * @return true如果发生了超时重置，false正常运行
+ */
+bool velocity_tracking_check_cycle_timeout(position_ring_buffer_t *buffer, uint32_t timestamp);
 
 /**
  * @brief 启动速度跟踪模式任务

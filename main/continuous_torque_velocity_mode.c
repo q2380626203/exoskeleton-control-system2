@@ -5,6 +5,10 @@
 
 static const char *TAG = "position_recorder";
 
+// 调试信息打印控制
+static uint32_t last_debug_print_time = 0;
+#define DEBUG_PRINT_INTERVAL_MS 2000  // 每2秒打印一次调试信息
+
 // 可配置的运动模式参数
 float climbing_mode_torque = 6.0f;  // 爬楼模式力矩大小 (Nm)
 
@@ -306,23 +310,32 @@ motion_mode_t detect_motion_mode(position_ring_buffer_t *buffer,
 
     float position_range = peak_valley_diff;
 
-    // 强制输出位置差值信息用于调试
-    ESP_LOGI(TAG, "【运动检测】波峰波谷差值: %.3f (数据点数: %d)",
-             position_range, buffer->count);
+    // 控制调试信息打印频率
+    bool should_print_debug = (current_timestamp - last_debug_print_time) >= DEBUG_PRINT_INTERVAL_MS;
 
-    // 如果是爬楼模式但差值小于阈值，输出详细调试信息
-    if (position_range < MODE_DETECTION_THRESHOLD && position_range >= STATIC_DETECTION_THRESHOLD) {
-        ESP_LOGI(TAG, "【调试】差值 %.3f 在行走范围内，但可能存在误判");
+    if (should_print_debug) {
+        ESP_LOGI(TAG, "【运动检测】波峰波谷差值: %.3f (数据点数: %d)",
+                 position_range, buffer->count);
+        last_debug_print_time = current_timestamp;
 
-        // 输出最近5个位置点用于调试
-        ESP_LOGI(TAG, "【缓存区调试】最近的位置点:");
-        int points_to_show = (buffer->count < 5) ? buffer->count : 5;
-        for (int i = 0; i < points_to_show; i++) {
-            position_point_t point;
-            if (position_ring_buffer_get_at_index(buffer, i, &point)) {
-                ESP_LOGI(TAG, "  位置[%d]: %.3f (时间戳: %lu)", i, point.position, point.timestamp);
+        // 如果是爬楼模式但差值小于阈值，输出详细调试信息
+        if (position_range < MODE_DETECTION_THRESHOLD && position_range >= STATIC_DETECTION_THRESHOLD) {
+            ESP_LOGI(TAG, "【调试】差值 %.3f 在行走范围内，但可能存在误判", position_range);
+
+            // 输出最近5个位置点用于调试
+            ESP_LOGI(TAG, "【缓存区调试】最近的位置点:");
+            int points_to_show = (buffer->count < 5) ? buffer->count : 5;
+            for (int i = 0; i < points_to_show; i++) {
+                position_point_t point;
+                if (position_ring_buffer_get_at_index(buffer, i, &point)) {
+                    ESP_LOGI(TAG, "  位置[%d]: %.3f (时间戳: %lu)", i, point.position, point.timestamp);
+                }
             }
         }
+    } else {
+        // 非调试打印时间，使用更低级别的日志
+        ESP_LOGD(TAG, "【运动检测】波峰波谷差值: %.3f (数据点数: %d)",
+                 position_range, buffer->count);
     }
 
     // 基于纯位置数据的运动模式判断

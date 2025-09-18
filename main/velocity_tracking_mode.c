@@ -56,10 +56,15 @@ void velocity_tracking_mode_init(void) {
     velocity_tracking_context.enabled = false;
     velocity_tracking_context.last_update_time = 0;
 
+    // 初始化运动状态管理（复用爬楼升降档逻辑）
+    motion_mode_state_init(&velocity_tracking_context.motion_state);
+
     // 初始化轮流工作周期管理
     velocity_tracking_context.current_work_cycle = WORK_CYCLE_MOTOR1; // 从1号电机开始
     velocity_tracking_context.cycle_completed = false;
     velocity_tracking_context.cycle_start_time = 0;
+    velocity_tracking_context.expected_cycle_duration_ms = DEFAULT_CYCLE_DURATION_MS;
+    velocity_tracking_context.cycle_timeout_threshold_ms = (uint32_t)(DEFAULT_CYCLE_DURATION_MS * CYCLE_TIMEOUT_MULTIPLIER);
 
     // 初始化节律控制
     velocity_tracking_init_rhythm(&velocity_tracking_context.motor1_rhythm);
@@ -108,29 +113,22 @@ velocity_tracking_state_t velocity_tracking_mode_get_state(void) {
 }
 
 /**
- * @brief 检查是否应该启用速度跟踪模式
+ * @brief 检查是否应该启用速度跟踪模式（复用爬楼升档判断逻辑）
  */
-bool velocity_tracking_should_enable(position_ring_buffer_t *buffer) {
+bool velocity_tracking_should_enable(position_ring_buffer_t *buffer, uint32_t timestamp) {
     if (buffer == NULL) {
         return false;
     }
 
-    // 使用现有的波峰波谷差值检测函数
-    float peak_valley_diff = detect_peak_valley_difference(buffer);
+    // 复用爬楼升档判断逻辑作为启动条件
+    motion_mode_t detected_mode = detect_motion_mode(buffer, timestamp, &velocity_tracking_context.motion_state);
 
-    if (peak_valley_diff < 0) {
-        // 检测失败，尝试使用最大最小值方法
-        float min_pos, max_pos;
-        if (!position_ring_buffer_get_min_max(buffer, &min_pos, &max_pos)) {
-            return false;
-        }
-        peak_valley_diff = max_pos - min_pos;
-    }
+    // 当检测到爬楼模式时启用velocity_tracking（位置变化>=0.7）
+    bool should_enable = (detected_mode == MOTION_MODE_CLIMBING);
 
-    bool should_enable = peak_valley_diff >= VELOCITY_TRACKING_ENABLE_THRESHOLD;
-
-    ESP_LOGD(TAG, "波峰波谷差值检测: %.3f (阈值: %.3f) -> %s",
-             peak_valley_diff, VELOCITY_TRACKING_ENABLE_THRESHOLD,
+    ESP_LOGD(TAG, "运动模式检测: %s -> velocity_tracking %s",
+             detected_mode == MOTION_MODE_STATIC ? "静止" :
+             detected_mode == MOTION_MODE_WALKING ? "行走" : "爬楼",
              should_enable ? "启用" : "禁用");
 
     return should_enable;
@@ -213,8 +211,11 @@ bool velocity_tracking_update_rhythm(rhythm_control_t *rhythm, float velocity, u
 
         ESP_LOGI(TAG, "电机%d开始执行%s，持续时间: %lu ms (间隔%lu + 200ms)",
                  motor_id,
-                 new_action == MOTOR_ACTION_LIFT_LEG ? "抬腿" : "放腿",
+                 new_action == MOTOR_ACTION_LIFT_LEG ? "抬腿MIT" : "放腿MIT",
                  rhythm->control_duration_ms, time_interval);
+
+        // 实际执行电机动作
+        velocity_tracking_execute_motor_action(motor_id - 1, new_action);
 
         // 记录这次变化时间
         rhythm->last_change_time = timestamp;
@@ -222,10 +223,36 @@ bool velocity_tracking_update_rhythm(rhythm_control_t *rhythm, float velocity, u
 
         return true;
     } else if (rhythm->last_dir == VELOCITY_DIR_UNKNOWN) {
-        // 第一次检测到有效速度方向
+        // 第一次检测到有效速度方向，立即执行相应动作
+        motor_action_t new_action = MOTOR_ACTION_IDLE;
+        if (motor_id == 1) {
+            // 1号电机：-v抬腿，+v放腿
+            new_action = (new_dir == VELOCITY_DIR_NEGATIVE) ? MOTOR_ACTION_LIFT_LEG : MOTOR_ACTION_DROP_LEG;
+        } else if (motor_id == 2) {
+            // 2号电机：+v抬腿，-v放腿
+            new_action = (new_dir == VELOCITY_DIR_POSITIVE) ? MOTOR_ACTION_LIFT_LEG : MOTOR_ACTION_DROP_LEG;
+        }
+
+        // 执行动作
+        rhythm->current_action = new_action;
+        rhythm->action_start_time = timestamp;
+        rhythm->action_active = true;
+        rhythm->control_duration_ms = 1200; // 首次动作使用默认时间1.2秒
+
+        ESP_LOGI(TAG, "电机%d首次检测到速度方向: %s，立即执行%s（持续时间: %lu ms）",
+                 motor_id,
+                 new_dir == VELOCITY_DIR_POSITIVE ? "+v" : "-v",
+                 new_action == MOTOR_ACTION_LIFT_LEG ? "抬腿MIT" : "放腿MIT",
+                 rhythm->control_duration_ms);
+
+        // 实际执行电机动作
+        velocity_tracking_execute_motor_action(motor_id - 1, new_action);
+
+        // 记录首次检测信息
         rhythm->last_dir = new_dir;
         rhythm->last_change_time = timestamp;
-        ESP_LOGI(TAG, "电机%d首次检测到速度方向: %s", motor_id, new_dir == VELOCITY_DIR_POSITIVE ? "+v" : "-v");
+
+        return true; // 状态发生了变化
     }
 
     return false;
@@ -392,6 +419,8 @@ bool velocity_tracking_process_rhythm_timing(rhythm_control_t *rhythm, int motor
                 // 1号电机完成放腿，切换到休息，2号电机开始工作
                 velocity_tracking_context.motor1_rhythm.is_resting = true;
                 velocity_tracking_context.motor2_rhythm.is_resting = false;
+                velocity_tracking_context.current_work_cycle = WORK_CYCLE_MOTOR2;
+                velocity_tracking_context.cycle_start_time = timestamp; // 记录新工作周期开始时间
                 velocity_tracking_context.total_work_cycles++;
                 ESP_LOGI(TAG, "1号电机完成放腿，进入休息状态，2号电机开始工作周期 (总周期数: %lu)",
                          velocity_tracking_context.total_work_cycles);
@@ -399,6 +428,8 @@ bool velocity_tracking_process_rhythm_timing(rhythm_control_t *rhythm, int motor
                 // 2号电机完成放腿，切换到休息，1号电机开始工作
                 velocity_tracking_context.motor2_rhythm.is_resting = true;
                 velocity_tracking_context.motor1_rhythm.is_resting = false;
+                velocity_tracking_context.current_work_cycle = WORK_CYCLE_MOTOR1;
+                velocity_tracking_context.cycle_start_time = timestamp; // 记录新工作周期开始时间
                 velocity_tracking_context.total_work_cycles++;
                 ESP_LOGI(TAG, "2号电机完成放腿，进入休息状态，1号电机开始工作周期 (总周期数: %lu)",
                          velocity_tracking_context.total_work_cycles);
@@ -431,19 +462,24 @@ bool velocity_tracking_mode_update(position_ring_buffer_t *buffer,
 
     velocity_tracking_context.last_update_time = timestamp;
 
-    // 检查是否应该启用速度跟踪 - 暂时注释掉启动条件
-    // bool should_enable = velocity_tracking_should_enable(buffer);
-    bool should_enable = true; // 暂时强制启用，跳过缓存区检查
+    // 检查工作周期超时并处理超时重置
+    if (velocity_tracking_check_cycle_timeout(buffer, timestamp)) {
+        return true; // 发生了超时重置，状态已改变
+    }
+
+    // 检查是否应该启用速度跟踪（使用爬楼升档判断逻辑）
+    bool should_enable = velocity_tracking_should_enable(buffer, timestamp);
 
     // 只有在ENABLED状态时才检查是否应该激活，一旦激活就保持激活状态
     if (should_enable && velocity_tracking_context.state == VELOCITY_TRACKING_ENABLED) {
         // 激活速度跟踪模式
         velocity_tracking_context.state = VELOCITY_TRACKING_ACTIVE;
         velocity_tracking_context.activation_count++;
+        velocity_tracking_context.cycle_start_time = timestamp; // 记录首次激活的工作周期开始时间
         state_changed = true;
-        ESP_LOGI(TAG, "速度跟踪模式激活 (激活次数: %lu) - 波峰波谷差值达到启动阈值", velocity_tracking_context.activation_count);
+        ESP_LOGI(TAG, "速度跟踪模式激活 (激活次数: %lu) - 检测到爬楼模式，达到启动条件", velocity_tracking_context.activation_count);
     }
-    // 注意：一旦激活后，不再检查波峰波谷差值，保持激活状态
+    // 注意：一旦激活后，不再检查运动模式，保持激活状态
     // 如果需要停止，需要手动调用禁用函数
 
     // 如果处于激活状态，处理交替工作控制
@@ -630,6 +666,76 @@ void velocity_tracking_task(void* pvParameters) {
     ESP_LOGI(TAG, "速度跟踪模式任务退出");
     velocity_tracking_task_handle = NULL;
     vTaskDelete(NULL);
+}
+
+/**
+ * @brief 检查工作周期是否超时并处理超时重置
+ */
+bool velocity_tracking_check_cycle_timeout(position_ring_buffer_t *buffer, uint32_t timestamp) {
+    // 只在ACTIVE状态时检查超时
+    if (velocity_tracking_context.state != VELOCITY_TRACKING_ACTIVE) {
+        return false;
+    }
+
+    // 检查当前是否有工作周期在进行
+    if (velocity_tracking_context.cycle_start_time == 0) {
+        return false; // 没有活跃的工作周期
+    }
+
+    // 计算当前工作周期已运行时间
+    uint32_t cycle_elapsed_time = timestamp - velocity_tracking_context.cycle_start_time;
+
+    // 检查是否超过超时阈值
+    if (cycle_elapsed_time >= velocity_tracking_context.cycle_timeout_threshold_ms) {
+        // 确定当前应该工作的电机
+        int working_motor_id = (velocity_tracking_context.current_work_cycle == WORK_CYCLE_MOTOR1) ? 0 : 1;
+        rhythm_control_t *working_rhythm = (working_motor_id == 0) ?
+            &velocity_tracking_context.motor1_rhythm : &velocity_tracking_context.motor2_rhythm;
+
+        ESP_LOGW(TAG, "【超时重置】%d号电机工作周期超时！", working_motor_id + 1);
+        ESP_LOGW(TAG, "  运行时间: %lu ms >= 超时阈值: %lu ms",
+                 cycle_elapsed_time, velocity_tracking_context.cycle_timeout_threshold_ms);
+        ESP_LOGW(TAG, "  预期周期时间: %lu ms (%.1f倍)",
+                 velocity_tracking_context.expected_cycle_duration_ms, CYCLE_TIMEOUT_MULTIPLIER);
+
+        // 检查工作电机是否还在等待抬腿动作
+        if (!working_rhythm->action_active && working_rhythm->current_action == MOTOR_ACTION_IDLE) {
+            ESP_LOGW(TAG, "  原因: %d号电机在预期时间%.1f倍内未检测到抬腿动作",
+                     working_motor_id + 1, CYCLE_TIMEOUT_MULTIPLIER);
+        } else {
+            ESP_LOGW(TAG, "  原因: %d号电机动作执行异常或卡滞", working_motor_id + 1);
+        }
+
+        // 执行超时重置：回到ENABLED状态
+        velocity_tracking_context.state = VELOCITY_TRACKING_ENABLED;
+        velocity_tracking_context.cycle_start_time = 0;
+        velocity_tracking_context.cycle_completed = false;
+
+        // 重置节律控制状态
+        velocity_tracking_init_rhythm(&velocity_tracking_context.motor1_rhythm);
+        velocity_tracking_init_rhythm(&velocity_tracking_context.motor2_rhythm);
+
+        // 设置初始工作状态：1号工作，2号休息
+        velocity_tracking_context.motor1_rhythm.is_resting = false;
+        velocity_tracking_context.motor2_rhythm.is_resting = true;
+        velocity_tracking_context.current_work_cycle = WORK_CYCLE_MOTOR1;
+
+        // 清空位置缓存区，等待重新激活
+        if (buffer != NULL) {
+            position_ring_buffer_clear(buffer);
+            ESP_LOGI(TAG, "【超时重置】清空位置缓存区，等待重新激活");
+        }
+
+        // 设置电机为空闲状态
+        velocity_tracking_execute_motor_action(0, MOTOR_ACTION_IDLE);
+        velocity_tracking_execute_motor_action(1, MOTOR_ACTION_IDLE);
+
+        ESP_LOGI(TAG, "【超时重置】velocity_tracking模式已重置到ENABLED状态，等待重新激活");
+
+        return true; // 发生了超时重置
+    }
+
+    return false; // 正常运行
 }
 
 /**
