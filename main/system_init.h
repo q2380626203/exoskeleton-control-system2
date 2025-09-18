@@ -9,6 +9,7 @@
 #define SYSTEM_INIT_H
 
 #include "esp_err.h"
+#include "voice_module.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,10 +38,13 @@ esp_err_t system_init_exoskeleton(void);
 
 /**
  * @brief 初始化整个系统
- * 
+ *
  * @return esp_err_t 返回ESP_OK表示成功
  */
 esp_err_t system_init_all(void);
+
+// 全局语音模块实例
+extern VoiceModule voiceModule;
 
 #ifdef __cplusplus
 }

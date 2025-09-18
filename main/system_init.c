@@ -27,8 +27,8 @@ static const char *TAG = "system_init";
 // 外部电机数组
 extern MI_Motor motors[];
 
-// 语音模块实例
-static VoiceModule voiceModule;
+// 语音模块实例（全局可访问）
+VoiceModule voiceModule;
 
 // WiFi热点事件回调函数
 static void wifi_event_callback(int32_t event_id, void* event_data)

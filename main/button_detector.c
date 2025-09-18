@@ -1,5 +1,7 @@
 #include "button_detector.h"
 #include "esp_log.h"
+#include "system_init.h"
+#include "velocity_tracking_mode.h"
 
 static const char *TAG = "BUTTON_DETECTOR";
 
@@ -57,18 +59,62 @@ void button_init() {
 // 按键处理任务
 void buttonProcessTask(void* pvParameters) {
     while (true) {
-        // 检查按键1状态位
+        // 检查按键1状态位（增加velocity_tracking_lift_leg_torque）
         if (g_buttonData.gpio1_pressed_flag) {
             g_buttonData.gpio1_pressed_flag = false;  // 清除状态位
-            ESP_LOGI(TAG, "按键1被按下");
-            // TODO: 在这里添加按键1的具体处理逻辑
+
+            // 增加抬腿力矩，最大限制在10Nm
+            if (velocity_tracking_lift_leg_torque < 10.0f) {
+                velocity_tracking_lift_leg_torque += 1.0f;
+                if (velocity_tracking_lift_leg_torque > 10.0f) {
+                    velocity_tracking_lift_leg_torque = 10.0f;
+                }
+            } else {
+                // 即使已经在最大值，也保持在10Nm
+                ESP_LOGW(TAG, "按键1被按下 - 抬腿力矩已在最大值10Nm");
+            }
+
+            ESP_LOGI(TAG, "按键1被按下 - 增加抬腿力矩至: %.1f Nm", velocity_tracking_lift_leg_torque);
+
+            // 统一语音播报新值
+            int torque_int = (int)velocity_tracking_lift_leg_torque;
+            voice_speak(&voiceModule, "增加");
+            vTaskDelay(pdMS_TO_TICKS(1500)); 
+
+            // 组合"当前"和数字一起播报
+            char current_msg[32];
+            const char* number_str = number_to_chinese(torque_int);
+            snprintf(current_msg, sizeof(current_msg), "当前%s", number_str);
+            voice_speak(&voiceModule, current_msg);
         }
         
-        // 检查按键2状态位
+        // 检查按键2状态位（减少velocity_tracking_lift_leg_torque）
         if (g_buttonData.gpio2_pressed_flag) {
             g_buttonData.gpio2_pressed_flag = false;  // 清除状态位
-            ESP_LOGI(TAG, "按键2被按下");
-            // TODO: 在这里添加按键2的具体处理逻辑
+
+            // 减少抬腿力矩，最小限制在1Nm
+            if (velocity_tracking_lift_leg_torque > 1.0f) {
+                velocity_tracking_lift_leg_torque -= 1.0f;
+                if (velocity_tracking_lift_leg_torque < 1.0f) {
+                    velocity_tracking_lift_leg_torque = 1.0f;
+                }
+            } else {
+                // 即使已经在最小值，也保持在1Nm
+                ESP_LOGW(TAG, "按键2被按下 - 抬腿力矩已在最小值1Nm");
+            }
+
+            ESP_LOGI(TAG, "按键2被按下 - 减少抬腿力矩至: %.1f Nm", velocity_tracking_lift_leg_torque);
+
+            // 统一语音播报新值
+            int torque_int = (int)velocity_tracking_lift_leg_torque;
+            voice_speak(&voiceModule, "减少");
+            vTaskDelay(pdMS_TO_TICKS(1500)); 
+
+            // 组合"当前"和数字一起播报
+            char current_msg[32];
+            const char* number_str = number_to_chinese(torque_int);
+            snprintf(current_msg, sizeof(current_msg), "当前%s", number_str);
+            voice_speak(&voiceModule, current_msg);
         }
         
         // 任务延时，避免过度占用CPU
