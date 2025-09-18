@@ -27,6 +27,9 @@ static const char *TAG = "system_init";
 // 外部电机数组
 extern MI_Motor motors[];
 
+// 语音模块实例
+static VoiceModule voiceModule;
+
 // WiFi热点事件回调函数
 static void wifi_event_callback(int32_t event_id, void* event_data)
 {
@@ -78,9 +81,10 @@ esp_err_t system_init_exoskeleton(void)
 {
     ESP_LOGI(TAG, "初始化外骨骼控制模块...");
     
-    // 语音模块已禁用 - 为电机数据传输让出UART2
-    // voice_module_init(&voiceModule);
-    // voice_speak(&voiceModule, "系统启动中");
+    // 启用语音模块
+    ESP_LOGI(TAG, "初始化语音模块...");
+    voice_module_init(&voiceModule);
+    //voice_speak(&voiceModule, "系统启动中");
     
     // 初始化电机通信
     UART_Rx_Init(motor_data_callback);
@@ -117,10 +121,12 @@ esp_err_t system_init_exoskeleton(void)
     ESP_LOGI(TAG, "电机模式设置完成");
     
     // 初始化按键检测
-    // button_init();
+    ESP_LOGI(TAG, "初始化按键检测模块...");
+    button_init();
 
     // 创建按键处理任务
-    // xTaskCreate(buttonProcessTask, "ButtonProcess", 4096, NULL, 5, &buttonTaskHandle);
+    ESP_LOGI(TAG, "启动按键处理任务...");
+    xTaskCreate(buttonProcessTask, "ButtonProcess", 4096, NULL, 5, NULL);
     
 
     ESP_LOGI(TAG, "外骨骼控制模块初始化完成");
@@ -141,8 +147,8 @@ esp_err_t system_init_all(void)
     ESP_ERROR_CHECK(system_init_wifi());
     ESP_ERROR_CHECK(system_init_exoskeleton());
     
-    // 系统初始化完成提示（语音模块已禁用）
-    // voice_speak(&voiceModule, "外骨骼WiFi控制系统启动完成");
+    // 系统初始化完成提示
+    voice_speak(&voiceModule, "启动成功");
     ESP_LOGI(TAG, "系统初始化完成！");
     
     return ESP_OK;

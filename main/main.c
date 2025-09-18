@@ -13,7 +13,7 @@
 #include "system_init.h"
 #include "wifi_softap_module.h"
 #include "rs01_motor.h"
-#include "uart_motor_transmit.h"
+// #include "uart_motor_transmit.h"  // 已禁用，让出UART2给语音模块
 #include "motor_web_control.h"
 #include "alternating_speed.h"
 #include "continuous_torque_velocity_mode.h"
@@ -57,8 +57,8 @@ motor_control_params_t sent_params[2] = {{0}};
 static TaskHandle_t uart_parse_task_handle = NULL;
 bool uart_parse_enabled = true;
 
-// 电机数据传输任务相关变量
-static TaskHandle_t motor_transmit_task_handle = NULL;
+// 电机数据传输任务相关变量 - 已禁用
+// static TaskHandle_t motor_transmit_task_handle = NULL;
 
 // 运动模式检测任务相关变量
 static TaskHandle_t motion_detection_task_handle = NULL;
@@ -427,9 +427,10 @@ void set_motor_params(int motor_id, float torque, float position, float speed, f
 
 
 
-/**
+/*
+ * 电机数据传输任务 - 已禁用，让出UART2给语音模块
  * @brief 启动电机数据传输任务
- */
+
 void Start_Motor_Data_Transmit(void) {
     if (motor_transmit_task_handle == NULL) {
         BaseType_t result = xTaskCreate(
@@ -450,6 +451,7 @@ void Start_Motor_Data_Transmit(void) {
         ESP_LOGW(TAG, "电机数据传输任务已在运行");
     }
 }
+*/
 
 /**
  * @brief 应用程序主入口函数
@@ -479,10 +481,10 @@ void app_main(void)
 
 
 
-    // 初始化并启动电机数据传输功能
-    ESP_LOGI(TAG, "初始化电机数据传输...");
-    uart_motor_transmit_init();
-    Start_Motor_Data_Transmit();
+    // 初始化并启动电机数据传输功能 - 已禁用，让出UART2给语音模块
+    // ESP_LOGI(TAG, "初始化电机数据传输...");
+    // uart_motor_transmit_init();
+    // Start_Motor_Data_Transmit();
 
     // 启动运动模式检测任务
     ESP_LOGI(TAG, "启动运动模式检测任务...");
