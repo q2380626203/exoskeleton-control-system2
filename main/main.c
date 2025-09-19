@@ -495,6 +495,12 @@ void app_main(void)
     velocity_tracking_mode_init();
     velocity_tracking_start_task();
 
+    // 系统启动完成后默认启用速度跟踪模式
+    ESP_LOGI(TAG, "启用速度跟踪模式...");
+    velocity_tracking_mode_active = true;
+    velocity_tracking_mode_set_enabled(true);
+    ESP_LOGI(TAG, "速度跟踪模式已默认启用");
+
     // 初始化电机控制网页模块
     ESP_LOGI(TAG, "初始化电机控制网页...");
     esp_err_t web_result = motor_web_control_init();

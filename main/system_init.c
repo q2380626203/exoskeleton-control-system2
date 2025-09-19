@@ -91,7 +91,13 @@ esp_err_t system_init_exoskeleton(void)
     
     // 等待UART稳定
     vTaskDelay(pdMS_TO_TICKS(500));
-    
+
+    // 语音播报系统启动成功
+    ESP_LOGI(TAG, "语音播报: 启动成功");
+    voice_speak(&voiceModule, "启动成功");
+    vTaskDelay(pdMS_TO_TICKS(1500)); // 死等待1.5秒播放完成
+    ESP_LOGI(TAG, "语音播报完成，开始设置电机");
+
     // 设置电机为运控模式
     ESP_LOGI(TAG, "设置电机为运控模式...");
     for(int i = 0; i < 2; i++) {
@@ -147,8 +153,8 @@ esp_err_t system_init_all(void)
     ESP_ERROR_CHECK(system_init_wifi());
     ESP_ERROR_CHECK(system_init_exoskeleton());
     
-    // 系统初始化完成提示
-    voice_speak(&voiceModule, "启动成功");
+    // 系统初始化完成，但不在这里播报，等待main中速度跟踪启用后再播报
+    // voice_speak(&voiceModule, "启动成功");
     ESP_LOGI(TAG, "系统初始化完成！");
     
     return ESP_OK;
