@@ -25,7 +25,6 @@ void position_ring_buffer_init(position_ring_buffer_t *buffer) {
     buffer->last_recorded_position = 0.0f;
     buffer->initialized = true;
 
-    ESP_LOGD(TAG, "环形缓存区初始化完成");
 }
 
 bool position_ring_buffer_add_if_changed(position_ring_buffer_t *buffer,
@@ -43,8 +42,6 @@ bool position_ring_buffer_add_if_changed(position_ring_buffer_t *buffer,
         position_ring_buffer_add(buffer, new_position, timestamp);
         buffer->last_recorded_position = new_position;
 
-        ESP_LOGD(TAG, "位置变化 %.3f 超过阈值，记录新位置: %.3f",
-                position_change, new_position);
         return true;
     }
 
@@ -74,8 +71,6 @@ void position_ring_buffer_add(position_ring_buffer_t *buffer,
         buffer->count++;
     }
 
-    ESP_LOGV(TAG, "添加位置点: %.3f (时间戳: %lu), 缓存区大小: %d",
-            position, timestamp, buffer->count);
 }
 
 bool position_ring_buffer_get_latest(position_ring_buffer_t *buffer,
@@ -227,7 +222,6 @@ void position_ring_buffer_clear(position_ring_buffer_t *buffer) {
     buffer->count = 0;
     buffer->last_recorded_position = 0.0f;
 
-    ESP_LOGD(TAG, "环形缓存区已清空");
 }
 
 bool position_ring_buffer_get_min_max(position_ring_buffer_t *buffer,
@@ -262,7 +256,6 @@ bool position_ring_buffer_get_min_max(position_ring_buffer_t *buffer,
     *min_pos = min_value;
     *max_pos = max_value;
 
-    ESP_LOGV(TAG, "缓存区最小值: %.3f, 最大值: %.3f", min_value, max_value);
     return true;
 }
 
@@ -276,7 +269,6 @@ motion_mode_t detect_motion_mode(position_ring_buffer_t *buffer,
 
     // 检查是否为空或数据不足
     if (buffer->count == 0) {
-        ESP_LOGD(TAG, "缓存区为空，默认为静止模式");
         return MOTION_MODE_STATIC;
     }
 
@@ -290,7 +282,6 @@ motion_mode_t detect_motion_mode(position_ring_buffer_t *buffer,
     // 检查是否超过静止超时时间（3秒没有更新）
     uint32_t time_since_last_update = current_timestamp - latest_point.timestamp;
     if (time_since_last_update > STATIC_TIMEOUT_MS) {
-        ESP_LOGD(TAG, "超过%dms无位置更新，切换到静止模式", STATIC_TIMEOUT_MS);
         return MOTION_MODE_STATIC;
     }
 
@@ -305,7 +296,6 @@ motion_mode_t detect_motion_mode(position_ring_buffer_t *buffer,
             return MOTION_MODE_STATIC;
         }
         peak_valley_diff = max_pos - min_pos;
-        ESP_LOGD(TAG, "使用最大最小值备用检测: %.3f", peak_valley_diff);
     }
 
     float position_range = peak_valley_diff;
@@ -318,24 +308,6 @@ motion_mode_t detect_motion_mode(position_ring_buffer_t *buffer,
                  position_range, buffer->count);
         last_debug_print_time = current_timestamp;
 
-        // 如果是爬楼模式但差值小于阈值，输出详细调试信息
-        if (position_range < MODE_DETECTION_THRESHOLD && position_range >= STATIC_DETECTION_THRESHOLD) {
-            ESP_LOGI(TAG, "【调试】差值 %.3f 在行走范围内，但可能存在误判", position_range);
-
-            // 输出最近5个位置点用于调试
-            ESP_LOGI(TAG, "【缓存区调试】最近的位置点:");
-            int points_to_show = (buffer->count < 5) ? buffer->count : 5;
-            for (int i = 0; i < points_to_show; i++) {
-                position_point_t point;
-                if (position_ring_buffer_get_at_index(buffer, i, &point)) {
-                    ESP_LOGI(TAG, "  位置[%d]: %.3f (时间戳: %lu)", i, point.position, point.timestamp);
-                }
-            }
-        }
-    } else {
-        // 非调试打印时间，使用更低级别的日志
-        ESP_LOGD(TAG, "【运动检测】波峰波谷差值: %.3f (数据点数: %d)",
-                 position_range, buffer->count);
     }
 
     // 基于纯位置数据的运动模式判断
@@ -406,8 +378,6 @@ void get_motor_params(motion_mode_t mode, int motor_id, motor_params_t *params) 
             params->velocity = 0;
             params->torque = 0.0f;
             params->kd = 0;
-            ESP_LOGD(TAG, "电机%d静止模式参数: 速度=%d, 力矩=%.1f, kd=%d",
-                     motor_id, params->velocity, params->torque, params->kd);
             break;
 
         case MOTION_MODE_WALKING:
@@ -421,8 +391,6 @@ void get_motor_params(motion_mode_t mode, int motor_id, motor_params_t *params) 
                 params->torque = 1.5f;
                 params->kd = 1;
             }
-            ESP_LOGD(TAG, "电机%d行走模式参数: 速度=%d, 力矩=%.1f, kd=%d",
-                     motor_id, params->velocity, params->torque, params->kd);
             break;
 
         case MOTION_MODE_CLIMBING:
@@ -436,8 +404,6 @@ void get_motor_params(motion_mode_t mode, int motor_id, motor_params_t *params) 
                 params->torque = climbing_mode_torque;
                 params->kd = 1;
             }
-            ESP_LOGD(TAG, "电机%d爬楼模式参数: 速度=%d, 力矩=%.1f, kd=%d",
-                     motor_id, params->velocity, params->torque, params->kd);
             break;
 
         default:
@@ -460,7 +426,6 @@ void torque_gradient_init(torque_gradient_t *gradient) {
     gradient->last_update_time = 0;
     gradient->is_increasing = false;
 
-    ESP_LOGD(TAG, "力矩渐变控制初始化完成");
 }
 
 float update_torque_gradient(torque_gradient_t *gradient,
@@ -503,7 +468,6 @@ float update_torque_gradient(torque_gradient_t *gradient,
         }
 
         gradient->last_update_time = current_timestamp;
-        ESP_LOGV(TAG, "力矩渐变更新: %.1f (目标: %.1f)", gradient->current_torque, gradient->target_torque);
     }
 
     return gradient->current_torque;
@@ -533,7 +497,6 @@ void motion_mode_state_init(motion_mode_state_t *state) {
     // 初始化爬楼模式降档控制
     state->climbing_downgrade_count = 0;
 
-    ESP_LOGD(TAG, "运动模式状态管理初始化完成");
 }
 
 void update_motion_mode_and_get_params(motion_mode_state_t *state,
@@ -572,14 +535,12 @@ void update_motion_mode_and_get_params(motion_mode_state_t *state,
                 // 开始静止确认过程
                 state->in_static_confirmation = true;
                 state->static_confirm_start_time = current_timestamp;
-                ESP_LOGD(TAG, "【静止确认】开始静止确认过程，需要持续%dms", STATIC_CONFIRM_DURATION_MS);
                 actual_mode = MOTION_MODE_STATIC; // 立即切换到静止模式让电机停止
             } else {
                 // 检查是否已经确认足够时间
                 uint32_t confirm_duration = current_timestamp - state->static_confirm_start_time;
                 if (confirm_duration >= STATIC_CONFIRM_DURATION_MS) {
                     // 确认切换到静止模式
-                    ESP_LOGD(TAG, "静止确认完成，切换到静止模式");
                     actual_mode = MOTION_MODE_STATIC;
                     state->in_static_confirmation = false;
 
@@ -590,8 +551,6 @@ void update_motion_mode_and_get_params(motion_mode_state_t *state,
                     state->last_mode_change_time = current_timestamp;
                     state->is_continuous_mode = false;
                 } else {
-                    ESP_LOGD(TAG, "【静止确认】已确认%dms，还需%dms",
-                             confirm_duration, STATIC_CONFIRM_DURATION_MS - confirm_duration);
                     actual_mode = MOTION_MODE_STATIC; // 确认期间保持静止模式
                 }
             }
@@ -600,7 +559,6 @@ void update_motion_mode_and_get_params(motion_mode_state_t *state,
         else {
             // 如果正在静止确认中，但检测到新的运动，取消确认
             if (state->in_static_confirmation) {
-                ESP_LOGD(TAG, "检测到新运动，取消静止确认");
                 state->in_static_confirmation = false;
             }
 
@@ -628,14 +586,12 @@ void update_motion_mode_and_get_params(motion_mode_state_t *state,
         // 模式没有变化
         if (state->in_static_confirmation && new_mode != MOTION_MODE_STATIC) {
             // 如果正在静止确认，但又检测到运动，取消确认
-            ESP_LOGD(TAG, "静止确认期间检测到运动，取消确认");
             state->in_static_confirmation = false;
         }
 
         // 检查是否进入持续模式
         if (!state->is_continuous_mode) {
             state->is_continuous_mode = true;
-            ESP_LOGD(TAG, "模式%d进入持续状态", state->current_mode);
         }
 
         actual_mode = state->current_mode;
@@ -654,12 +610,7 @@ void update_motion_mode_and_get_params(motion_mode_state_t *state,
     if (state->is_continuous_mode &&
         (actual_mode == MOTION_MODE_WALKING || actual_mode == MOTION_MODE_CLIMBING)) {
         params->kd = 0;
-        ESP_LOGD(TAG, "持续%s模式，电机%d的kd参数设为0",
-                 actual_mode == MOTION_MODE_WALKING ? "行走" : "爬楼",
-                 motor_id);
     }
 
-    ESP_LOGD(TAG, "【最终参数】电机%d当前模式=%d, 速度=%d, 力矩=%.1f (目标=%.1f), kd=%d",
-             motor_id, actual_mode, params->velocity, params->torque, target_torque, params->kd);
 }
 

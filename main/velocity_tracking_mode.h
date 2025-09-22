@@ -2,11 +2,11 @@
  * @file velocity_tracking_mode.h
  * @brief 速度跟踪模式控制头文件
  *
- * 基于位置环形缓存区的智能运动检测，实现智能速度跟踪模式：
+ * 基于位置环形缓存区的智能运动检测，实现轮流工作周期的速度跟踪模式：
  *
  * 节律控制工作原理：
- * 1. 启动条件：基于智能运动检测的爬楼升档判断(位置变化>=0.7)，模式从ENABLED状态切换到ACTIVE状态
- * 2. 速度方向检测：持续监测电机速度方向（绝对值>0.35才有效）
+ * 1. 启动条件：基于智能运动检测的爬楼升档判断(位置变化>=0.65)，模式从ENABLED状态切换到ACTIVE状态
+ * 2. 速度方向检测：持续监测电机速度方向（绝对值>0.20才有效）
  * 3. 实时MIT执行：
  *    - 首次检测到速度方向时立即执行相应MIT动作（持续1.2秒）
  *    - 后续方向变化时立即执行MIT动作（持续时间=上次间隔+200ms）
@@ -15,28 +15,27 @@
  *    - 2号电机：检测到+v时立即执行抬腿MIT，检测到-v时立即执行放腿MIT
  * 5. 自适应控制：MIT动作持续时间基于相邻速度变化的时间间隔自动调整
  * 6. 持续运行：一旦激活，持续进行节律控制，不再检查运动模式
- * 7. 超时重置：工作电机超时3秒未抬腿则自动重置到ENABLED状态，清空缓存区
+ * 7. 超时保护：工作电机超时3秒未抬腿则自动重置到ENABLED状态，清空缓存区
+ * 8. 抬腿超时处理：抬腿MIT超时800ms后强制切换到600ms放腿MIT
  *
- * 交替工作机制：
+ * 固定时长抬腿MIT交替工作机制：
  *
- * 阶段1 - 1号工作，2号休息：
- *   1号电机: 检测到-v→立即抬腿MIT→检测到+v→立即放腿MIT→完成后进入休息
- *   2号电机: 保持空闲休息状态
+ * 电机工作模式：
+ *   1号电机工作时: 检测到-v→抬腿0.6s→切换到2号工作→1号执行压腿0.6s
+ *   2号电机工作时: 检测到+v→抬腿0.6s→切换到1号工作→2号执行压腿0.6s
  *
- * 阶段2 - 2号工作，1号休息：
- *   2号电机: 检测到+v→立即抬腿MIT→检测到-v→立即放腿MIT→完成后进入休息
- *   1号电机: 保持空闲休息状态
- *
- * 时序：1号工作2号休息 → 2号工作1号休息 → 1号工作2号休息 → ...
+ * 切换时机：抬腿MIT完成后立即切换工作电机，同时开始压腿动作
+ * 检测延迟：新工作电机延迟200ms后开始速度检测，避免误触发
+ * 工作流程：1号工作→检测-v→抬腿0.6s→切换到2号→1号压腿0.6s(同时2号延迟200ms后检测+v)→循环
  *
  * 关键特性：
- * - 实时响应：首次检测到速度方向时立即执行MIT，无延迟
- * - 交替工作：任何时刻只有一个电机在工作，另一个在休息
- * - 自动切换：放腿MIT完成后立即切换工作状态
- * - 智能启动：基于爬楼升档判断自动激活（位置变化>=0.7弧度）
+ * - 实时响应：检测到对应速度方向时立即执行抬腿MIT，无延迟
+ * - 固定时长：抬腿MIT和压腿MIT都固定执行600ms
+ * - 交替工作：任何时刻只有一个电机在工作检测，另一个在压腿或休息
+ * - 完成切换：抬腿MIT完成后立即切换工作电机并开始压腿
+ * - 检测延迟：新工作电机延迟200ms后开始检测，避免压腿期间误触发
+ * - 智能启动：基于爬楼升档判断自动激活（位置变化>=0.65弧度）
  * - 超时保护：工作电机3秒未抬腿则自动重置，防止系统卡滞
- * - 参数自适应：MIT持续时间根据用户运动节律自动调整
- * - 状态隔离：休息的电机保持空闲状态，确保不干扰
  */
 
 #ifndef VELOCITY_TRACKING_MODE_H
@@ -51,10 +50,13 @@ extern "C" {
 #endif
 
 // 速度跟踪模式配置参数
-#define VELOCITY_TRACKING_ENABLE_THRESHOLD 0.95f     // 启用阈值（复用爬楼升档阈值）
-#define VELOCITY_TRACKING_MIN_VELOCITY 0.35f        // 最小有效速度阈值
+#define VELOCITY_TRACKING_ENABLE_THRESHOLD 0.65f     // 启用阈值（复用爬楼升档阈值）
+#define VELOCITY_TRACKING_MIN_VELOCITY 0.25f        // 最小有效速度阈值
 #define VELOCITY_TRACKING_UPDATE_INTERVAL_MS 50     // 速度跟踪更新间隔(50ms)
-#define LIFT_LEG_MAX_DURATION_MS 1000              // 抬腿MIT最大持续时间(1200ms)
+#define LIFT_LEG_FIXED_DURATION_MS 600             // 固定抬腿MIT持续时间(600ms)
+#define DROP_LEG_DELAY_MS 100                      // 压腿动作延时(200ms)
+#define DROP_LEG_FIXED_DURATION_MS 600             // 固定压腿MIT持续时间(600ms)
+#define LIFT_LEG_MAX_DURATION_MS 800              // 抬腿MIT最大持续时间(超时保护)
 #define TIMEOUT_DROP_LEG_DURATION_MS 600           // 抬腿超时后的放腿持续时间(600ms)
 
 // 工作周期超时管理
@@ -69,7 +71,7 @@ extern "C" {
 #define LIFT_LEG_KD 1.0f            // 抬腿Kd参数
 
 // 电机动作参数 - 放腿
-#define DROP_LEG_TORQUE -2.0f       // 放腿力矩 (Nm)
+#define DROP_LEG_TORQUE -1.0f       // 放腿力矩 (Nm)
 #define DROP_LEG_POSITION 0.0f      // 放腿位置 (rad)
 #define DROP_LEG_SPEED -1.5f        // 放腿速度 (rad/s)
 #define DROP_LEG_KP 0.0f            // 放腿Kp参数
@@ -114,6 +116,10 @@ typedef struct {
     bool detection_blocked;                 // 检测是否被阻止（互锁机制）
     bool is_resting;                        // 是否处于休息状态
 
+    // 检测延迟控制
+    bool detection_delayed;                 // 检测是否延迟中
+    uint32_t detection_delay_start_time;    // 检测延迟开始时间
+
     // 节律统计
     uint32_t total_cycles;                  // 总循环次数
     uint32_t avg_cycle_time_ms;             // 平均循环时间
@@ -137,6 +143,10 @@ typedef struct {
     uint32_t expected_cycle_duration_ms;        // 预期工作周期持续时间
     uint32_t cycle_timeout_threshold_ms;        // 周期超时阈值（2.5倍预期时间）
 
+    // 切换保护机制
+    uint32_t last_switch_time;                  // 上次工作电机切换时间
+    uint32_t switch_protection_duration_ms;     // 切换保护持续时间
+
     // 节律控制状态
     rhythm_control_t motor1_rhythm;             // 电机1节律控制
     rhythm_control_t motor2_rhythm;             // 电机2节律控制
@@ -153,10 +163,11 @@ extern velocity_tracking_context_t velocity_tracking_context;
 extern bool velocity_tracking_mode_enabled;
 
 // 可调参数全局变量（用于网页调整）
-extern float velocity_tracking_lift_leg_torque;    // 抬腿力矩
-extern float velocity_tracking_lift_leg_speed;     // 抬腿速度
-extern float velocity_tracking_drop_leg_torque;    // 放腿力矩
-extern float velocity_tracking_drop_leg_speed;     // 放腿速度
+extern float velocity_tracking_lift_leg_torque;       // 抬腿力矩
+extern float velocity_tracking_lift_leg_speed;        // 抬腿速度
+extern float velocity_tracking_drop_leg_torque;       // 放腿力矩
+extern float velocity_tracking_drop_leg_speed;        // 放腿速度
+extern uint32_t velocity_tracking_lift_leg_max_duration;  // 抬腿MIT最大持续时间(ms)
 
 // 函数声明
 
@@ -184,24 +195,32 @@ bool velocity_tracking_mode_is_enabled(void);
 velocity_tracking_state_t velocity_tracking_mode_get_state(void);
 
 /**
- * @brief 更新速度跟踪模式（主要处理函数）
- * @param buffer 位置环形缓存区指针
+ * @brief 更新速度跟踪模式（主要处理函数，支持双电机升档判断）
+ * @param buffer_motor1 1号电机位置环形缓存区指针
+ * @param buffer_motor2 2号电机位置环形缓存区指针
  * @param motor1_velocity 电机1当前速度 (rad/s)
  * @param motor2_velocity 电机2当前速度 (rad/s)
  * @param timestamp 当前时间戳 (ms)
  * @return true如果状态发生变化，false无变化
  */
-bool velocity_tracking_mode_update(position_ring_buffer_t *buffer,
+bool velocity_tracking_mode_update(position_ring_buffer_t *buffer_motor1,
+                                  position_ring_buffer_t *buffer_motor2,
                                   float motor1_velocity,
                                   float motor2_velocity,
                                   uint32_t timestamp);
 
 /**
- * @brief 检查是否应该启用速度跟踪模式
- * @param buffer 位置环形缓存区指针
+ * @brief 检查是否应该启用速度跟踪模式（支持双电机升档判断）
+ * @param buffer_motor1 1号电机位置环形缓存区指针
+ * @param buffer_motor2 2号电机位置环形缓存区指针
+ * @param timestamp 时间戳
+ * @param triggered_motor 输出参数：触发启动的电机ID（1或2），如果未触发则为0
  * @return true应该启用，false不应启用
  */
-bool velocity_tracking_should_enable(position_ring_buffer_t *buffer, uint32_t timestamp);
+bool velocity_tracking_should_enable(position_ring_buffer_t *buffer_motor1,
+                                    position_ring_buffer_t *buffer_motor2,
+                                    uint32_t timestamp,
+                                    int *triggered_motor);
 
 /**
  * @brief 根据速度决定电机动作
@@ -280,7 +299,9 @@ void velocity_tracking_reset_to_enabled(void);
  * @param timestamp 当前时间戳
  * @return true如果发生了超时重置，false正常运行
  */
-bool velocity_tracking_check_cycle_timeout(position_ring_buffer_t *buffer, uint32_t timestamp);
+bool velocity_tracking_check_cycle_timeout(position_ring_buffer_t *buffer_motor1,
+                                          position_ring_buffer_t *buffer_motor2,
+                                          uint32_t timestamp);
 
 /**
  * @brief 启动速度跟踪模式任务

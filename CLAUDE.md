@@ -29,7 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - 统一的电机控制参数管理 (`motor_control_params_t`)
    - 串口数据解析任务 (`UART_Parse_Task`)
    - 运动模式检测任务 (`Motion_Detection_Task`)
-   - 电机数据传输任务管理
+   - 默认启用速度跟踪模式和语音反馈
 
 2. **系统初始化模块** (`system_init.c/.h`)
    - NVS存储初始化
@@ -37,9 +37,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - 外骨骼控制模块初始化
 
 3. **电机控制模块**
-   - `rs01_motor.c/.h` - RS01电机通信协议和UART接口
+   - `rs01_motor.c/.h` - RS01电机通信协议和UART1接口
    - `motor_web_control.c/.h` - HTTP服务器和网页控制界面
-   - `uart_motor_transmit.c/.h` - 电机数据传输任务
+   - ~~`uart_motor_transmit.c/.h` - 电机数据传输任务~~ (已禁用，UART2让给语音模块)
 
 4. **运动控制模块**
    - `alternating_speed.c/.h` - 速度交替模式和行走模式切换
@@ -49,8 +49,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 5. **外设模块**
    - `wifi_softap_module.c/.h` - WiFi热点功能
-   - `button_detector.c/.h` - 按键检测
-   - `voice_module.c/.h` - 语音反馈
+   - `button_detector.c/.h` - 按键检测 (GPIO11/10，控制velocity_tracking参数)
+   - `voice_module.c/.h` - 语音反馈 (UART2，中文数字播报)
 
 ### 关键特性
 
@@ -60,6 +60,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **条件发送机制**：只在参数变化时发送控制指令
 - **WiFi网页控制**：通过浏览器实时控制和监控电机状态
 - **速度跟踪模式**：基于速度方向变化的交替工作机制，支持抬腿MIT超时保护
+- **语音反馈系统**：系统启动、参数调节的中文语音提示
+- **按键实时控制**：通过物理按键调节velocity_tracking抬腿力矩(1-10Nm)
 
 ### RS01电机通信
 
@@ -74,13 +76,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - Kp：0 ~ 500
   - Kd：0 ~ 5
 
+### UART端口分配
+
+- **UART1** (TX: GPIO13, RX: GPIO12) - RS01电机通信，波特率115200
+- **UART2** (TX: GPIO1, RX: GPIO2) - 语音模块通信，波特率9600
+
 ### 任务管理
 
-- `UART_Parse_Task` - 200Hz频率解析串口数据
+- `UART_Parse_Task` - 20ms频率解析串口数据
 - `Motion_Detection_Task` - 运动模式检测和力矩渐变控制
-- `motor_data_transmit_task` - 定期发送电机数据
+- `buttonProcessTask` - 按键检测和语音反馈处理
 - `Alternating_Speed_Control_Task` - 速度交替控制（可选）
-- `velocity_tracking_task` - 速度跟踪模式任务（可选）
+- `velocity_tracking_task` - 速度跟踪模式任务（默认启用）
 
 ## 关键设计模式
 
@@ -100,13 +107,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **自适应时间**：放腿MIT持续时间=检测间隔+200ms
 - **网页可调参数**：抬腿/放腿的力矩和速度参数
 
+### 按键控制系统
+
+- **GPIO11** (按键1) - 增加抬腿力矩，语音播报"增加，当前X"
+- **GPIO10** (按键2) - 减少抬腿力矩，语音播报"减少，当前X"
+- **参数范围** - velocity_tracking_lift_leg_torque: 1-10Nm，步长1Nm
+- **去抖动** - 1秒防误触发，语音播报间隔1.5秒
+
+### 启动流程
+
+1. 系统初始化 → 语音播报"启动成功" → 等待1.5秒
+2. 电机设置和按键初始化
+3. 默认启用速度跟踪模式 → 语音播报"速度跟踪已启用"
+
 ## 开发注意事项
 
 - 电机参数使用 `motor_control_params_t` 结构体统一管理
 - 通过 `unified_motor_control()` 函数发送控制指令
 - 位置监测使用环形缓存区 (`position_ring_buffer_t`)
 - 运动模式状态通过 `motion_mode_state_t` 管理
-- velocity_tracking模式参数可通过全局变量实时调整
+- velocity_tracking模式参数可通过全局变量和按键实时调整
+- 语音模块通过全局 `voiceModule` 变量访问
 - WiFi热点默认SSID可在 `wifi_softap_module.c` 中配置
 - 所有日志使用ESP_LOG系列宏，TAG统一命名
 
@@ -115,4 +136,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 使用 `idf.py monitor` 查看系统日志
 - 通过WiFi连接访问网页控制界面
 - 电机状态通过串口数据实时反馈
+- 语音反馈提供直观的系统状态和参数调节确认
 - 支持VS Code ESP-IDF插件开发环境
+- 运动检测调试信息每2秒输出一次，避免日志噪音

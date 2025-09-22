@@ -66,8 +66,9 @@ static TaskHandle_t motion_detection_task_handle = NULL;
 // 参数变化检测阈值
 #define PARAM_CHANGE_THRESHOLD 0.001f
 
-// 位置记录缓存区
-position_ring_buffer_t position_recorder;
+// 位置记录缓存区（为每个电机独立记录）
+position_ring_buffer_t position_recorder_motor1;  // 1号电机位置记录
+position_ring_buffer_t position_recorder_motor2;  // 2号电机位置记录
 
 // 运动模式状态管理
 motion_mode_state_t motion_state;
@@ -156,14 +157,22 @@ void Motion_Detection_Task(void* pvParameters) {
         TickType_t current_time = xTaskGetTickCount();
         uint32_t timestamp = current_time * portTICK_PERIOD_MS;
 
-        // 检查是否需要位置记录（运动检测模式或velocity_tracking模式启用时）
-        bool need_position_recording = motion_mode_detection_enabled || velocity_tracking_mode_enabled;
+        // 检查是否需要位置记录
+        // 1. 运动检测模式启用时需要记录
+        // 2. velocity_tracking处于ENABLED状态时需要记录（用于升档判断）
+        // 3. velocity_tracking处于ACTIVE状态时不需要记录（避免干扰交替工作）
+        bool need_for_motion_detection = motion_mode_detection_enabled;
+        bool need_for_velocity_tracking = velocity_tracking_mode_enabled &&
+                                         (velocity_tracking_mode_get_state() == VELOCITY_TRACKING_ENABLED);
+        bool need_position_recording = need_for_motion_detection || need_for_velocity_tracking;
 
         if (need_position_recording) {
-            // 检查位置记录（从电机1获取位置数据）
+            // 检查位置记录（同时记录两个电机的位置数据）
             if ((current_time - last_position_check) >= position_check_interval) {
-                // 获取电机1的当前位置并记录变化
-                position_ring_buffer_add_if_changed(&position_recorder, motors[0].position, timestamp);
+                // 记录1号电机位置变化
+                position_ring_buffer_add_if_changed(&position_recorder_motor1, motors[0].position, timestamp);
+                // 记录2号电机位置变化
+                position_ring_buffer_add_if_changed(&position_recorder_motor2, motors[1].position, timestamp);
                 last_position_check = current_time;
             }
 
@@ -172,7 +181,7 @@ void Motion_Detection_Task(void* pvParameters) {
         if (motion_mode_detection_enabled) {
             // 运动模式检测和参数更新
             if ((current_time - last_mode_check) >= mode_check_interval) {
-                motion_mode_t detected_mode = detect_motion_mode(&position_recorder, timestamp, &motion_state);
+                motion_mode_t detected_mode = detect_motion_mode(&position_recorder_motor1, timestamp, &motion_state);
 
                 // 检查是否需要更新模式
                 if (detected_mode != motion_state.current_mode) {
@@ -182,7 +191,8 @@ void Motion_Detection_Task(void* pvParameters) {
 
                     // 如果检测到静止模式，清理位置缓存区避免旧数据影响
                     if (detected_mode == MOTION_MODE_STATIC) {
-                        position_ring_buffer_clear(&position_recorder);
+                        position_ring_buffer_clear(&position_recorder_motor1);
+                        position_ring_buffer_clear(&position_recorder_motor2);
                         ESP_LOGI(TAG, "【静止确认】清理位置缓存区，避免旧数据影响");
                     }
                 }
@@ -248,8 +258,8 @@ void Motion_Detection_Task(void* pvParameters) {
             float motor1_velocity = motors[0].velocity;
             float motor2_velocity = motors[1].velocity;
 
-            // 更新速度跟踪模式
-            velocity_tracking_mode_update(&position_recorder, motor1_velocity, motor2_velocity, timestamp);
+            // 更新速度跟踪模式（传入双电机缓存区）
+            velocity_tracking_mode_update(&position_recorder_motor1, &position_recorder_motor2, motor1_velocity, motor2_velocity, timestamp);
         }
 
         // 任务延时
@@ -463,8 +473,9 @@ void app_main(void)
     // 初始化整个系统
     ESP_ERROR_CHECK(system_init_all());
     
-    // 初始化位置记录缓存区
-    position_ring_buffer_init(&position_recorder);
+    // 初始化位置记录缓存区（每个电机独立）
+    position_ring_buffer_init(&position_recorder_motor1);
+    position_ring_buffer_init(&position_recorder_motor2);
     ESP_LOGI(TAG, "位置记录缓存区初始化完成");
 
     // 初始化运动模式状态管理
