@@ -169,6 +169,14 @@ extern float velocity_tracking_drop_leg_torque;       // 放腿力矩
 extern float velocity_tracking_drop_leg_speed;        // 放腿速度
 extern uint32_t velocity_tracking_lift_leg_max_duration;  // 抬腿MIT最大持续时间(ms)
 
+// 新增可调参数全局变量
+extern uint32_t velocity_tracking_lift_leg_fixed_duration_ms;  // 固定抬腿持续时间(ms)
+extern uint32_t velocity_tracking_drop_leg_delay_ms;          // 压腿动作延时(ms)
+extern uint32_t velocity_tracking_drop_leg_fixed_duration_ms; // 固定压腿持续时间(ms)
+extern uint32_t velocity_tracking_default_cycle_duration_ms;  // 默认工作周期持续时间(ms)
+extern float velocity_tracking_enable_threshold;              // 启用阈值
+extern float velocity_tracking_min_velocity;                  // 最小有效速度阈值
+
 // 函数声明
 
 /**

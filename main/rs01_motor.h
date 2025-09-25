@@ -10,8 +10,8 @@
 
 // UART Configuration
 #define MOTOR_UART_NUM       UART_NUM_1  // ESP-IDF UART port for RS01 motor communication
-#define UART_TX_PIN          13         // UART transmit pin  
-#define UART_RX_PIN          12         // UART receive pin  
+#define UART_TX_PIN          10         // UART transmit pin  
+#define UART_RX_PIN          11         // UART receive pin  
 #define UART_BAUDRATE        115200     // UART baud rate
 
 // CAN-to-Serial Module Protocol

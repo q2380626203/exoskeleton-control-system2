@@ -7,8 +7,8 @@
 #include "esp_timer.h"
 
 // GPIO引脚配置
-#define BUTTON_GPIO1_PIN    GPIO_NUM_11
-#define BUTTON_GPIO2_PIN    GPIO_NUM_10
+#define BUTTON_GPIO1_PIN    GPIO_NUM_13
+#define BUTTON_GPIO2_PIN    GPIO_NUM_12
 
 // 按键状态定义
 #define BUTTON_RELEASED     1

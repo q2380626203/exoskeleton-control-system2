@@ -25,6 +25,14 @@ float velocity_tracking_drop_leg_torque = DROP_LEG_TORQUE;       // 放腿力矩
 float velocity_tracking_drop_leg_speed = DROP_LEG_SPEED;         // 放腿速度
 uint32_t velocity_tracking_lift_leg_max_duration = LIFT_LEG_MAX_DURATION_MS;  // 抬腿MIT最大持续时间(ms)
 
+// 新增可调参数全局变量
+uint32_t velocity_tracking_lift_leg_fixed_duration_ms = LIFT_LEG_FIXED_DURATION_MS;  // 固定抬腿持续时间(ms)
+uint32_t velocity_tracking_drop_leg_delay_ms = DROP_LEG_DELAY_MS;                    // 压腿动作延时(ms)
+uint32_t velocity_tracking_drop_leg_fixed_duration_ms = DROP_LEG_FIXED_DURATION_MS;  // 固定压腿持续时间(ms)
+uint32_t velocity_tracking_default_cycle_duration_ms = DEFAULT_CYCLE_DURATION_MS;    // 默认工作周期持续时间(ms)
+float velocity_tracking_enable_threshold = VELOCITY_TRACKING_ENABLE_THRESHOLD;       // 启用阈值
+float velocity_tracking_min_velocity = VELOCITY_TRACKING_MIN_VELOCITY;               // 最小有效速度阈值
+
 // 任务句柄
 static TaskHandle_t velocity_tracking_task_handle = NULL;
 
@@ -66,8 +74,8 @@ void velocity_tracking_mode_init(void) {
     velocity_tracking_context.current_work_cycle = WORK_CYCLE_MOTOR1; // 从1号电机开始
     velocity_tracking_context.cycle_completed = false;
     velocity_tracking_context.cycle_start_time = 0;
-    velocity_tracking_context.expected_cycle_duration_ms = DEFAULT_CYCLE_DURATION_MS;
-    velocity_tracking_context.cycle_timeout_threshold_ms = (uint32_t)(DEFAULT_CYCLE_DURATION_MS * CYCLE_TIMEOUT_MULTIPLIER);
+    velocity_tracking_context.expected_cycle_duration_ms = velocity_tracking_default_cycle_duration_ms;
+    velocity_tracking_context.cycle_timeout_threshold_ms = (uint32_t)(velocity_tracking_default_cycle_duration_ms * CYCLE_TIMEOUT_MULTIPLIER);
 
     // 初始化切换保护机制
     velocity_tracking_context.last_switch_time = 0;
@@ -175,7 +183,7 @@ bool velocity_tracking_should_enable(position_ring_buffer_t *buffer_motor1,
  * @brief 获取速度方向
  */
 velocity_direction_t velocity_tracking_get_direction(float velocity) {
-    if (fabsf(velocity) < VELOCITY_TRACKING_MIN_VELOCITY) {
+    if (fabsf(velocity) < velocity_tracking_min_velocity) {
         return VELOCITY_DIR_UNKNOWN;
     }
     return (velocity > 0) ? VELOCITY_DIR_POSITIVE : VELOCITY_DIR_NEGATIVE;
@@ -196,10 +204,10 @@ bool velocity_tracking_update_rhythm(rhythm_control_t *rhythm, float velocity, u
     // 检查检测延迟状态
     if (rhythm->detection_delayed) {
         uint32_t delay_elapsed = timestamp - rhythm->detection_delay_start_time;
-        if (delay_elapsed < DROP_LEG_DELAY_MS) {
+        if (delay_elapsed < velocity_tracking_drop_leg_delay_ms) {
             // 仍在延迟期内，跳过检测
             ESP_LOGD(TAG, "电机%d检测延迟中，已过%lu ms，还需%lu ms",
-                     motor_id, delay_elapsed, DROP_LEG_DELAY_MS - delay_elapsed);
+                     motor_id, delay_elapsed, velocity_tracking_drop_leg_delay_ms - delay_elapsed);
             return false;
         } else {
             // 延迟期结束，恢复检测
@@ -237,7 +245,7 @@ bool velocity_tracking_update_rhythm(rhythm_control_t *rhythm, float velocity, u
         rhythm->current_action = MOTOR_ACTION_LIFT_LEG;
         rhythm->action_start_time = timestamp;
         rhythm->action_active = true;
-        rhythm->control_duration_ms = LIFT_LEG_FIXED_DURATION_MS; // 固定时长
+        rhythm->control_duration_ms = velocity_tracking_lift_leg_fixed_duration_ms; // 固定时长
         rhythm->current_dir = new_dir;
 
         ESP_LOGI(TAG, "电机%d检测到%s，执行抬腿MIT（固定时长: %lu ms）",
@@ -383,7 +391,7 @@ bool velocity_tracking_process_rhythm_timing(rhythm_control_t *rhythm, int motor
             velocity_tracking_context.motor2_rhythm.detection_delay_start_time = timestamp;
 
             ESP_LOGI(TAG, "1号电机抬腿完成，切换到2号电机工作，2号检测延迟%lu ms (总周期数: %lu)",
-                     DROP_LEG_DELAY_MS, velocity_tracking_context.total_work_cycles);
+                     velocity_tracking_drop_leg_delay_ms, velocity_tracking_context.total_work_cycles);
         } else if (motor_id == 1) { // 2号电机完成抬腿
             velocity_tracking_context.motor1_rhythm.is_resting = false;
             velocity_tracking_context.motor2_rhythm.is_resting = true;
@@ -395,13 +403,13 @@ bool velocity_tracking_process_rhythm_timing(rhythm_control_t *rhythm, int motor
             velocity_tracking_context.motor1_rhythm.detection_delay_start_time = timestamp;
 
             ESP_LOGI(TAG, "2号电机抬腿完成，切换到1号电机工作，1号检测延迟%lu ms (总周期数: %lu)",
-                     DROP_LEG_DELAY_MS, velocity_tracking_context.total_work_cycles);
+                     velocity_tracking_drop_leg_delay_ms, velocity_tracking_context.total_work_cycles);
         }
 
         // 抬腿MIT完成，当前电机开始压腿动作
         rhythm->current_action = MOTOR_ACTION_DROP_LEG;
         rhythm->action_start_time = timestamp; // 重新计时
-        rhythm->control_duration_ms = DROP_LEG_FIXED_DURATION_MS; // 压腿固定时长
+        rhythm->control_duration_ms = velocity_tracking_drop_leg_fixed_duration_ms; // 压腿固定时长
 
         ESP_LOGI(TAG, "电机%d抬腿MIT完成，开始执行压腿MIT（固定时长: %lu ms）",
                  motor_id+1, rhythm->control_duration_ms);
